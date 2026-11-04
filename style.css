@@ -143,6 +143,9 @@ input[type="range"]::-moz-range-thumb { width: 16px; height: 16px; border: 0; bo
 #btnPlay .i-pause, #btnPlay.playing .i-play { display: none; }
 #btnPlay.playing .i-pause { display: block; }
 #btnMute .i-muted, #btnMute.muted .i-vol { display: none; }
+#btnFs .i-fs-exit, #btnFs.on .i-fs { display: none; }
+#btnFs.on .i-fs-exit { display: block; }
+#btnFs.on { background: rgba(255, 214, 0, 0.14); border-color: rgba(255, 214, 0, 0.55); color: var(--signal); }
 #btnMute.muted .i-muted { display: block; }
 
 .vol { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
@@ -167,6 +170,35 @@ input[type="range"]::-moz-range-thumb { width: 16px; height: 16px; border: 0; bo
   transition: background 0.2s ease, color 0.2s ease, border-color 0.2s ease;
 }
 .seg button.on { background: rgba(255, 214, 0, 0.14); border-color: rgba(255, 214, 0, 0.55); color: var(--signal); font-weight: 600; }
+
+/* Velocidade: carrossel de 0,25× a 5×, a escolhida vai para o meio */
+.rates {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  scroll-snap-type: x proximity;
+  scroll-behavior: smooth;
+  scrollbar-width: none;
+  padding: 3px calc(50% - 32px);
+  margin: 0 -12px;
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 18%, #000 82%, transparent);
+  mask-image: linear-gradient(to right, transparent, #000 18%, #000 82%, transparent);
+}
+.rates::-webkit-scrollbar { display: none; }
+.rates button {
+  flex: none;
+  min-width: 64px;
+  scroll-snap-align: center;
+  border: 1px solid var(--line);
+  background: rgba(0, 0, 0, 0.3);
+  border-radius: 999px;
+  padding: 8px 10px;
+  font-size: 14px;
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+  transition: background 0.2s ease, color 0.2s ease, border-color 0.2s ease, transform 0.2s var(--ease);
+}
+.rates button.on { background: rgba(255, 214, 0, 0.14); border-color: rgba(255, 214, 0, 0.55); color: var(--signal); font-weight: 600; transform: scale(1.08); }
 
 /* Listas */
 .tabs {

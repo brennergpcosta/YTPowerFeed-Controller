@@ -247,9 +247,38 @@ function renderNow() {
   $("btnPlay").classList.toggle("playing", st.state === 1 || st.state === 3);
   $("btnMute").classList.toggle("muted", !!st.muted || st.volume === 0);
   if (!volDragging) { $("vol").value = st.muted ? 0 : st.volume; setFill($("vol")); }
-  for (const b of $("rateSeg").children) b.classList.toggle("on", Math.abs(Number(b.dataset.rate) - (st.rate || 1)) < 0.01);
+  markRate();
+  $("btnFs").classList.toggle("on", !!st.fs);
   for (const b of $("resSeg").children) b.classList.toggle("on", b.dataset.res === st.resMode);
   $("tDur").textContent = fmt(st.duration);
+}
+
+// Velocidade: carrossel com as mesmas da extensão (0,25× a 5×); a escolhida desliza para o meio
+const RATES = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2, 2.5, 3, 3.5, 4, 4.5, 5];
+let shownRate = 0;
+function buildRates() {
+  $("rateSeg").replaceChildren(...RATES.map((r) => {
+    const b = document.createElement("button");
+    b.dataset.rate = r;
+    b.setAttribute("role", "radio");
+    b.textContent = `${String(r).replace(".", ",")}×`;
+    return b;
+  }));
+}
+function markRate(instant) {
+  const rate = st.rate || 1;
+  let on = null;
+  for (const b of $("rateSeg").children) {
+    const hit = Math.abs(Number(b.dataset.rate) - rate) < 0.01;
+    b.classList.toggle("on", hit);
+    b.setAttribute("aria-checked", String(hit));
+    if (hit) on = b;
+  }
+  if (on && shownRate !== rate) {
+    shownRate = rate;
+    const box = $("rateSeg");
+    box.scrollTo({ left: on.offsetLeft - (box.clientWidth - on.offsetWidth) / 2, behavior: instant ? "instant" : "smooth" });
+  }
 }
 
 // Tempo andando entre uma atualização e outra
@@ -327,7 +356,7 @@ function renderList(items, error) {
   list.replaceChildren(...items.map((v, i) => itemEl(v, i, {
     current: v.videoId === st.videoId,
     action: "queue",
-    onTap: () => { send({ c: "open", videoId: v.videoId }); toast("Tocando no PC"); },
+    onTap: () => { send({ c: "open", videoId: v.videoId, title: v.title || "" }); toast("Tocando no PC"); },
     onAct: () => send({ c: "queue", videoId: v.videoId })
   })));
 }
@@ -403,6 +432,12 @@ function bindUi() {
   });
   vol.addEventListener("change", () => { volDragging = false; });
   $("btnMute").addEventListener("click", () => send({ c: "mute", on: !(st.muted || st.volume === 0) }));
+  $("btnFs").addEventListener("click", () => {
+    st.fs = !st.fs;
+    send({ c: "fs", on: st.fs });
+    renderNow();
+    toast(st.fs ? "Tela cheia no PC" : "Saindo da tela cheia");
+  });
   $("rateSeg").addEventListener("click", (e) => {
     const b = e.target.closest("button");
     if (b) { send({ c: "rate", rate: Number(b.dataset.rate) }); st.rate = Number(b.dataset.rate); renderNow(); }
@@ -434,8 +469,10 @@ async function main() {
   try { tab = localStorage.getItem("ytpf-remote-tab") || "subs"; } catch (err) {}
   if (tab === "search") tab = "subs";
   for (const b of $("tabs").children) b.classList.toggle("on", b.dataset.tab === tab);
+  buildRates();
   bindUi();
   renderNow();
+  markRate(true);
   requestAnimationFrame(frame);
   ctx = await keys(secret);
   connect();
