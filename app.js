@@ -221,6 +221,8 @@ function onMessage(m) {
     renderNow();
   } else if (m.t === "list") {
     if (m.which === tab && (tab !== "search" || m.q === lastQuery)) renderList(m.items, m.error, !!m.auto);
+  } else if (m.t === "tabs") {
+    renderTabs(m.items || [], m.pin || 0);
   } else if (m.t === "toast") {
     toast(m.text);
   }
@@ -228,6 +230,8 @@ function onMessage(m) {
 
 function renderNow() {
   const has = !!st.videoId;
+  $("btnTarget").classList.toggle("pinned", !!st.pinned);
+  setText($("targetText"), st.pinned ? `Travado na aba: ${st.tabTitle || "YouTube"}` : "Toca na aba em foco do PC");
   $("nowTitle").textContent = has ? st.title || "…" : "Nada tocando";
   $("nowChannel").textContent = has ? st.channel || "" : "Abra um vídeo pela lista abaixo";
   $("nowBadge").hidden = !st.ad;
@@ -411,6 +415,86 @@ function showTab(name, reload) {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Abas do PC
+// ---------------------------------------------------------------------------------------------
+const ICON_FOCUS = '<svg viewBox="0 0 24 24"><path d="M21 3H3a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h5v2h8v-2h5a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2zm0 14H3V5h18v12z"/></svg>';
+const ICON_PIN = '<svg viewBox="0 0 24 24"><path d="M18 8h-1V6A5 5 0 0 0 7 6v2H6a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V10a2 2 0 0 0-2-2zM9 6a3 3 0 0 1 6 0v2H9V6zm9 14H6V10h12v10z"/></svg>';
+
+function setText(el, text) { if (el.textContent !== text) el.textContent = text; }
+
+function tabOpt({ on, icon, title, sub, tags, onTap }, i) {
+  const b = document.createElement("button");
+  b.className = "tab-opt" + (on ? " on" : "");
+  b.style.animationDelay = `${i * 30}ms`;
+  const ico = document.createElement("span");
+  ico.className = "ico";
+  ico.innerHTML = icon;
+  const txt = document.createElement("span");
+  txt.className = "txt";
+  const t = document.createElement("div");
+  t.className = "t";
+  t.textContent = title;
+  txt.append(t);
+  if (sub) {
+    const c = document.createElement("div");
+    c.className = "c";
+    c.textContent = sub;
+    txt.append(c);
+  }
+  if (tags?.length) {
+    const row = document.createElement("div");
+    row.className = "tags";
+    for (const [text, hot] of tags) {
+      const g = document.createElement("span");
+      g.className = "tag" + (hot ? " hot" : "");
+      g.textContent = text;
+      row.append(g);
+    }
+    txt.append(row);
+  }
+  b.append(ico, txt);
+  b.addEventListener("click", onTap);
+  return b;
+}
+
+function pinTab(tabId) {
+  send({ c: "pin", tabId });
+  $("tabSheet").close();
+}
+
+function renderTabs(items, pin) {
+  const list = $("tabList");
+  const opts = [{
+    on: !pin,
+    icon: ICON_FOCUS,
+    title: "Aba em foco",
+    sub: "Padrão: toca na aba do YouTube que estiver em foco no PC",
+    onTap: () => pinTab(0)
+  }];
+  for (const it of items) {
+    const tags = [];
+    if (it.playing) tags.push(["Tocando", true]);
+    if (it.pip) tags.push(["Janela flutuante", true]);
+    if (it.focused) tags.push(["Em foco", false]);
+    if (it.serving) tags.push(["Atende o celular", false]);
+    opts.push({
+      on: it.tabId === pin,
+      icon: ICON_PIN,
+      title: it.title,
+      sub: [it.kind !== it.title ? it.kind : "", it.monitor, it.window, it.tab].filter(Boolean).join(" · "),
+      tags,
+      onTap: () => pinTab(it.tabId)
+    });
+  }
+  if (!items.length) {
+    const e = emptyEl("Nenhuma aba do YouTube respondeu");
+    list.replaceChildren(...opts.map(tabOpt), e);
+  } else {
+    list.replaceChildren(...opts.map(tabOpt));
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
 // Aviso
 // ---------------------------------------------------------------------------------------------
 let toastTimer = 0;
@@ -456,6 +540,13 @@ function bindUi() {
   });
   vol.addEventListener("change", () => { volDragging = false; });
   $("btnMute").addEventListener("click", () => send({ c: "mute", on: !(st.muted || st.volume === 0) }));
+  $("btnTarget").addEventListener("click", () => {
+    $("tabList").replaceChildren(emptyEl("Procurando as abas do PC…"));
+    $("tabSheet").showModal();
+    send({ c: "tabs" });
+  });
+  // Toque fora da folha fecha
+  $("tabSheet").addEventListener("click", (e) => { if (e.target === e.currentTarget) e.currentTarget.close(); });
   $("btnFs").addEventListener("click", () => {
     st.fs = !st.fs;
     send({ c: "fs", on: st.fs });

@@ -27,6 +27,14 @@
   </section>
 
   <main id="mainView" hidden>
+    <!-- Em qual aba do PC toca: a em foco (padrão) ou uma travada -->
+    <button class="target" id="btnTarget" aria-haspopup="dialog">
+      <svg viewBox="0 0 24 24" class="i-tab"><path d="M21 3H3a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h5v2h8v-2h5a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2zm0 14H3V5h18v12z"/></svg>
+      <svg viewBox="0 0 24 24" class="i-lock"><path d="M18 8h-1V6A5 5 0 0 0 7 6v2H6a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V10a2 2 0 0 0-2-2zM9 6a3 3 0 0 1 6 0v2H9V6zm9 14H6V10h12v10zm-6-3a2 2 0 1 0 0-4 2 2 0 0 0 0 4z"/></svg>
+      <span class="target-text" id="targetText">Toca na aba em foco do PC</span>
+      <svg viewBox="0 0 24 24" class="chev"><path d="M7 10l5 5 5-5z"/></svg>
+    </button>
+
     <!-- Tocando agora -->
     <section class="now" id="now">
       <div class="thumb-wrap">
@@ -84,6 +92,13 @@
     </form>
     <section class="list" id="list" aria-live="polite"></section>
   </main>
+
+  <dialog class="sheet" id="tabSheet" aria-label="Escolher a aba do PC">
+    <div class="sheet-grip" aria-hidden="true"></div>
+    <h2>Onde tocar no PC</h2>
+    <p class="sheet-hint">Travado numa aba, tudo que você mandar toca nela, esteja onde estiver o foco no PC.</p>
+    <div class="tab-list" id="tabList"></div>
+  </dialog>
 
   <div class="toast" id="toast" role="status"></div>
   <script src="app.js" type="module"></script>
