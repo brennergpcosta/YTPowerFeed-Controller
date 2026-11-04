@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0f0f0f">
+  <meta name="referrer" content="no-referrer">
+  <title>YTPowerFeed</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" href="icons/maskable-192.png">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="ambient" aria-hidden="true"></div>
+
+  <header class="top">
+    <img src="icons/icon-192.png" alt="" class="logo">
+    <span class="brand">YTPowerFeed</span>
+    <span class="conn" id="conn" data-state="off"><span class="dot"></span><span id="connText">Desconectado</span></span>
+  </header>
+
+  <!-- Sem pareamento -->
+  <section class="pair" id="pairView" hidden>
+    <h1>Parear com o PC</h1>
+    <p>No PC, abra o pop-up da YTPowerFeed, aba <b>Player</b>, e leia com a câmera do celular o QR code de <b>Controle remoto no celular</b>.</p>
+  </section>
+
+  <main id="mainView" hidden>
+    <!-- Tocando agora -->
+    <section class="now" id="now">
+      <div class="thumb-wrap">
+        <img class="thumb" id="nowThumb" alt="">
+        <span class="badge" id="nowBadge" hidden>Anúncio</span>
+      </div>
+      <div class="now-text">
+        <div class="now-title" id="nowTitle">Nada tocando</div>
+        <div class="now-channel" id="nowChannel">Abra um vídeo pela lista abaixo</div>
+      </div>
+      <div class="seek">
+        <input type="range" id="seek" min="0" max="1000" value="0" aria-label="Posição do vídeo">
+        <div class="times"><span id="tCur">0:00</span><span id="tDur">0:00</span></div>
+      </div>
+      <div class="controls">
+        <button class="ctl" data-cmd="prev" aria-label="Anterior"><svg viewBox="0 0 24 24"><path d="M6 6h2v12H6zM9.5 12 18 18V6z"/></svg></button>
+        <button class="ctl" data-cmd="back" aria-label="Voltar 10 segundos"><svg viewBox="0 0 24 24"><path d="M12 5V2L7 6l5 4V7a6 6 0 1 1-6 6H4a8 8 0 1 0 8-8z"/><text x="12" y="16.2" text-anchor="middle" font-size="6.5" font-weight="700">10</text></svg></button>
+        <button class="ctl big" id="btnPlay" data-cmd="toggle" aria-label="Tocar ou pausar">
+          <svg viewBox="0 0 24 24" class="i-play"><path d="M8 5v14l11-7z"/></svg>
+          <svg viewBox="0 0 24 24" class="i-pause"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>
+        </button>
+        <button class="ctl" data-cmd="fwd" aria-label="Avançar 10 segundos"><svg viewBox="0 0 24 24"><path d="M12 5V2l5 4-5 4V7a6 6 0 1 0 6 6h2a8 8 0 1 1-8-8z"/><text x="12" y="16.2" text-anchor="middle" font-size="6.5" font-weight="700">10</text></svg></button>
+        <button class="ctl" data-cmd="next" aria-label="Próximo"><svg viewBox="0 0 24 24"><path d="M16 6h2v12h-2zM6 18l8.5-6L6 6z"/></svg></button>
+      </div>
+      <div class="vol">
+        <button class="ctl small" id="btnMute" aria-label="Mudo">
+          <svg viewBox="0 0 24 24" class="i-vol"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0 0 14 8v8a4.5 4.5 0 0 0 2.5-4z"/></svg>
+          <svg viewBox="0 0 24 24" class="i-muted"><path d="M3 9v6h4l5 5V4L7 9H3zm13.6 3 2.7-2.7-1.4-1.4-2.7 2.7-2.7-2.7-1.4 1.4 2.7 2.7-2.7 2.7 1.4 1.4 2.7-2.7 2.7 2.7 1.4-1.4z"/></svg>
+        </button>
+        <input type="range" id="vol" min="0" max="100" value="100" aria-label="Volume">
+      </div>
+      <div class="opts">
+        <div class="seg" id="rateSeg" role="radiogroup" aria-label="Velocidade">
+          <button data-rate="1">1×</button><button data-rate="1.25">1,25×</button><button data-rate="1.5">1,5×</button><button data-rate="1.75">1,75×</button><button data-rate="2">2×</button>
+        </div>
+        <div class="seg" id="resSeg" role="radiogroup" aria-label="Modo de resolução">
+          <button data-res="auto">Auto</button><button data-res="manual">Manual</button><button data-res="smart">Inteligente</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Listas -->
+    <nav class="tabs" id="tabs">
+      <button data-tab="queue">Fila</button>
+      <button data-tab="subs">Inscrições</button>
+      <button data-tab="wl">Assistir mais tarde</button>
+      <button data-tab="home">Início</button>
+      <button data-tab="search">Buscar</button>
+    </nav>
+    <form class="search" id="searchForm" hidden>
+      <input type="search" id="searchInput" placeholder="Buscar no YouTube" enterkeyhint="search" autocomplete="off">
+      <button type="submit" class="btn">Buscar</button>
+    </form>
+    <section class="list" id="list" aria-live="polite"></section>
+  </main>
+
+  <div class="toast" id="toast" role="status"></div>
+  <script src="app.js" type="module"></script>
+</body>
+</html>
