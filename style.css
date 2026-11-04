@@ -256,6 +256,11 @@ input[type="range"]::-moz-range-thumb { width: 16px; height: 16px; border: 0; bo
 .item:active { background: var(--surface); }
 .item.current { background: rgba(255, 214, 0, 0.08); box-shadow: inset 3px 0 0 var(--signal); }
 @keyframes item-in { from { opacity: 0; transform: translateY(8px); } }
+/* Vídeo novo que chegou sozinho: abre espaço e brilha */
+:root { interpolate-size: allow-keywords; }
+.item.fresh { overflow: hidden; animation: item-grow 0.5s var(--ease) both, item-glow 2.4s ease 0.3s both; }
+@keyframes item-grow { from { height: 0; padding-block: 0; opacity: 0; } to { height: auto; } }
+@keyframes item-glow { 0%, 40% { background: rgba(255, 214, 0, 0.16); box-shadow: inset 0 0 0 1px rgba(255, 214, 0, 0.55); } }
 .item .pic { position: relative; aspect-ratio: 16 / 9; border-radius: 8px; overflow: hidden; background: #222; }
 .item .pic img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .item .dur {

@@ -220,7 +220,7 @@ function onMessage(m) {
     if (m.queue) { queue = m.queue; if (tab === "queue") renderQueue(); }
     renderNow();
   } else if (m.t === "list") {
-    if (m.which === tab && (tab !== "search" || m.q === lastQuery)) renderList(m.items, m.error);
+    if (m.which === tab && (tab !== "search" || m.q === lastQuery)) renderList(m.items, m.error, !!m.auto);
   } else if (m.t === "toast") {
     toast(m.text);
   }
@@ -310,6 +310,7 @@ const ICON_REMOVE = '<svg viewBox="0 0 24 24"><path d="m6.4 5 5.6 5.6L17.6 5 19 
 function itemEl(v, i, { current, action, onTap, onAct }) {
   const row = document.createElement("div");
   row.className = "item" + (current ? " current" : "");
+  row.dataset.id = v.videoId;
   row.style.animationDelay = `${Math.min(i, 12) * 25}ms`;
   const pic = document.createElement("div");
   pic.className = "pic";
@@ -349,16 +350,39 @@ function emptyEl(text) {
   return e;
 }
 
-function renderList(items, error) {
-  const list = $("list");
-  if (error) return list.replaceChildren(emptyEl(`Não deu para carregar: ${error}`));
-  if (!items?.length) return list.replaceChildren(emptyEl(tab === "search" && !lastQuery ? "Digite o que procurar" : "Nada aqui"));
-  list.replaceChildren(...items.map((v, i) => itemEl(v, i, {
+function listItemEl(v, i) {
+  return itemEl(v, i, {
     current: v.videoId === st.videoId,
     action: "queue",
     onTap: () => { send({ c: "open", videoId: v.videoId, title: v.title || "" }); toast("Tocando no PC"); },
     onAct: () => send({ c: "queue", videoId: v.videoId })
-  })));
+  });
+}
+
+// auto: a lista mudou sozinha no PC (vídeo novo nas Inscrições). Os que já estavam ficam onde
+// estão, sem piscar; os novos entram abrindo espaço, com um brilho amarelo
+function renderList(items, error, auto) {
+  const list = $("list");
+  if (auto && error) return;
+  if (error) return list.replaceChildren(emptyEl(`Não deu para carregar: ${error}`));
+  if (!items?.length) return list.replaceChildren(emptyEl(tab === "search" && !lastQuery ? "Digite o que procurar" : "Nada aqui"));
+  const old = new Map([...list.querySelectorAll(".item[data-id]")].map((r) => [r.dataset.id, r]));
+  if (!auto || !old.size) return list.replaceChildren(...items.map(listItemEl));
+  const keep = new Set(items.map((v) => v.videoId));
+  for (const [id, r] of old) if (!keep.has(id)) r.remove();
+  for (const e of list.querySelectorAll(".empty")) e.remove();
+  let at = list.firstElementChild;
+  items.forEach((v, i) => {
+    let row = old.get(v.videoId);
+    if (!row) {
+      row = listItemEl(v, 0);
+      row.classList.add("fresh");
+    } else {
+      row.style.animation = "none"; // mudar de lugar não repete a entrada
+    }
+    if (row !== at) list.insertBefore(row, at);
+    else at = at.nextElementSibling;
+  });
 }
 
 function renderQueue() {
