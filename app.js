@@ -109,6 +109,14 @@ let retryTimer = 0;
 let fails = 0;
 let pcUpdated = false; // a extensão foi atualizada no PC (a aba antiga avisou antes de largar)
 
+// Versão da extensão no PC, ao lado do nome (fica a última conhecida)
+function showVersion(ver) {
+  if (typeof ver !== "string" || !/^[\d.]{1,20}$/.test(ver)) return;
+  const el = $("pcVer");
+  if (el.textContent !== `v${ver}`) el.textContent = `v${ver}`;
+  el.hidden = false;
+}
+
 function setUpdated(on) {
   pcUpdated = on;
   $("updNotice").hidden = !on;
@@ -342,6 +350,7 @@ const setFill = (input) => input.style.setProperty("--p", `${(input.value - inpu
 
 function onMessage(m) {
   if (m.t === "state") {
+    showVersion(m.ver);
     // O que o celular acabou de mudar fica como está até o PC confirmar (sem voltar e ir)
     for (const [k, p] of Object.entries(pend)) {
       if (performance.now() < p.until && m.videoId === p.videoId) m[k] = p.v;
