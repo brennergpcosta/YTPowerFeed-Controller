@@ -5,6 +5,8 @@
  * sai da própria chave (SHA-256). A chave vem no "#k=" do link e fica guardada neste aparelho.
  */
 
+import { qrcode } from "./vendor/qrcode.js";
+
 const RELAY = "https://ntfy.sh";
 const ICE = [{ urls: "stun:stun.l.google.com:19302" }, { urls: "stun:stun1.l.google.com:19302" }];
 const CHUNK = 3000;
@@ -128,6 +130,8 @@ function setUpdated(on) {
 }
 
 function setConn(state, text) {
+  const qr = $("qrRow");
+  if (qr && identity) qr.hidden = state === "on";
   $("conn").dataset.state = state;
   $("connText").textContent = text;
 }
@@ -257,6 +261,198 @@ function wake(e) {
   check(true);
 }
 
+// ---------------------------------------------------------------------------------------------
+// Conexão sem serviço de fora: identidade fixa deste celular (certificado guardado no IndexedDB) e
+// QR de conexão do PC. O PC guarda a impressão digital do certificado (mandada aqui ao conectar, ou
+// lida pela webcam no QR de pareamento, ou digitada como código) e, com ela, monta sozinho a
+// resposta deste celular; o QR do PC traz os endereços dele e o usuário e a senha de ICE que este
+// celular deve usar. A conta do código é a mesma do popup/remote-id.js da extensão
+// ---------------------------------------------------------------------------------------------
+let identity = null; // { cert, fp ("AB:CD:…"), code (56 caracteres) }
+const KNOWN = "ytpf-remote-known";
+const B32 = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+
+function idb() {
+  return new Promise((resolve, reject) => {
+    const r = indexedDB.open("ytpf-remote", 1);
+    r.onupgradeneeded = () => r.result.createObjectStore("kv");
+    r.onsuccess = () => resolve(r.result);
+    r.onerror = () => reject(r.error);
+  });
+}
+
+function toBase32(bytes) {
+  let out = "", bits = 0, value = 0;
+  for (const b of bytes) {
+    value = (value << 8) | b;
+    bits += 8;
+    while (bits >= 5) {
+      out += B32[(value >> (bits - 5)) & 31];
+      bits -= 5;
+    }
+  }
+  return out;
+}
+
+async function loadIdentity() {
+  const db = await idb();
+  const get = (k) => new Promise((resolve) => {
+    const q = db.transaction("kv").objectStore("kv").get(k);
+    q.onsuccess = () => resolve(q.result || null);
+    q.onerror = () => resolve(null);
+  });
+  let cert = await get("cert");
+  // Certificado novo um mês antes de vencer (aí o PC aprende o novo na próxima conexão)
+  if (!cert || cert.expires < Date.now() + 30 * 864e5) {
+    const algo = { name: "ECDSA", namedCurve: "P-256" };
+    cert = await RTCPeerConnection.generateCertificate({ ...algo, expires: 360 * 864e5 }).catch(() => RTCPeerConnection.generateCertificate(algo));
+    await new Promise((resolve) => {
+      const t = db.transaction("kv", "readwrite");
+      t.objectStore("kv").put(cert, "cert");
+      t.oncomplete = resolve;
+      t.onerror = resolve;
+    });
+  }
+  const fp = cert.getFingerprints().find((f) => f.algorithm === "sha-256").value.toUpperCase();
+  const bytes = Uint8Array.from(fp.split(":"), (h) => parseInt(h, 16));
+  const sum = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+  const code = toBase32([...bytes, sum[0], sum[1], sum[2]]);
+  return { cert, fp, code };
+}
+
+// O PC já conhece este celular: o cartão de pareamento some
+function setKnown(on) {
+  try { if (on) localStorage.setItem(KNOWN, identity?.fp || ""); } catch (err) {}
+  const card = $("pairCard");
+  if (card) card.hidden = on;
+}
+
+function drawQr(canvas, text) {
+  const qr = qrcode(0, "M");
+  qr.addData(text);
+  qr.make();
+  const n = qr.getModuleCount(), margin = 3, cell = Math.max(2, Math.floor(canvas.width / (n + margin * 2)));
+  const size = cell * (n + margin * 2);
+  canvas.width = canvas.height = size;
+  const ctx = canvas.getContext("2d");
+  ctx.fillStyle = "#fff";
+  ctx.fillRect(0, 0, size, size);
+  ctx.fillStyle = "#000";
+  for (let r = 0; r < n; r++) for (let c = 0; c < n; c++) if (qr.isDark(r, c)) ctx.fillRect((c + margin) * cell, (r + margin) * cell, cell, cell);
+}
+
+function renderPairCard() {
+  if (!identity) return;
+  let known = "";
+  try { known = localStorage.getItem(KNOWN) || ""; } catch (err) {}
+  drawQr($("pairQr"), `YTPF1:${identity.code}`);
+  $("pairCode").textContent = identity.code.replace(/(.{4})(?=.)/g, "$1-");
+  $("pairCard").hidden = known === identity.fp;
+}
+
+// Leitor do QR de conexão do PC (o Chrome do Android lê QR sozinho: BarcodeDetector)
+let scanStream = null;
+let scanOn = false;
+
+function stopScan() {
+  scanOn = false;
+  scanStream?.getTracks().forEach((t) => t.stop());
+  scanStream = null;
+  if ($("scanSheet").open) $("scanSheet").close();
+}
+
+async function scanPcQr() {
+  if (!("BarcodeDetector" in window)) { toast("Este navegador não lê QR code"); return; }
+  const detector = new BarcodeDetector({ formats: ["qr_code"] });
+  try {
+    scanStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+  } catch (err) {
+    toast("Sem acesso à câmera");
+    return;
+  }
+  const video = $("scanVideo");
+  video.srcObject = scanStream;
+  $("scanMsg").textContent = "Aponte para o QR de conexão no PC";
+  $("scanSheet").showModal();
+  await video.play().catch(() => {});
+  scanOn = true;
+  const tick = async () => {
+    if (!scanOn) return;
+    let text = "";
+    try { text = (await detector.detect(video)).map((c) => c.rawValue).find((t) => t.startsWith("YTPF2:")) || ""; } catch (err) {}
+    if (text) {
+      $("scanMsg").textContent = "Conectando…";
+      scanOn = false;
+      const ok = await connectByInvite(text);
+      if (ok) stopScan();
+      else { $("scanMsg").textContent = "Não conectou. No PC, gere outro QR e aponte de novo"; scanOn = true; setTimeout(tick, 1500); }
+      return;
+    }
+    setTimeout(tick, 200);
+  };
+  tick();
+}
+
+async function unpackInvite(text) {
+  const bytes = b64.dec(text.slice("YTPF2:".length));
+  return JSON.parse(new TextDecoder().decode(await pipe(bytes, new DecompressionStream("deflate-raw"))));
+}
+
+async function connectByInvite(text) {
+  if (!identity || spareBusy) return false;
+  let inv;
+  try { inv = await unpackInvite(text); } catch (err) { return false; }
+  if (!inv || typeof inv.u !== "string" || typeof inv.p !== "string" || !/^[0-9A-F]{64}$/i.test(inv.f || "") || !Array.isArray(inv.c)) return false;
+  const t0 = performance.now();
+  spareBusy = true;
+  try {
+    abandonAttempt();
+    dropConnection();
+    clearTimeout(retryTimer);
+    setConn("wait", "Conectando pelo QR…");
+    // A oferta do PC, remontada: o SDP de uma oferta deste mesmo Chrome com o usuário, a senha e a
+    // impressão digital do PC, mais os endereços dele
+    const tmp = new RTCPeerConnection();
+    tmp.createDataChannel("ytpf");
+    const base = (await tmp.createOffer()).sdp;
+    tmp.close();
+    const fpPc = inv.f.toUpperCase().match(/../g).join(":");
+    const lines = base.split("\r\n").filter((l) => l && !l.startsWith("a=candidate:"))
+      .map((l) => (l.startsWith("a=ice-ufrag:") ? `a=ice-ufrag:${inv.u}`
+        : l.startsWith("a=ice-pwd:") ? `a=ice-pwd:${inv.p}`
+        : l.startsWith("a=fingerprint:") ? `a=fingerprint:sha-256 ${fpPc}` : l));
+    const offer = [...lines, ...inv.c.filter((c) => typeof c === "string").slice(0, 20).map((c) => `a=${c}`)].join("\r\n") + "\r\n";
+    const peer = new RTCPeerConnection({ iceServers: [], certificates: [identity.cert] });
+    const chanP = new Promise((resolve) => { peer.ondatachannel = (e) => resolve(e.channel); });
+    await peer.setRemoteDescription({ type: "offer", sdp: offer });
+    const ans = await peer.createAnswer();
+    const munged = ans.sdp.split("\r\n").map((l) => (l.startsWith("a=ice-ufrag:") ? `a=ice-ufrag:${inv.pu}`
+      : l.startsWith("a=ice-pwd:") ? `a=ice-pwd:${inv.pp}` : l)).join("\r\n");
+    await peer.setLocalDescription({ type: "answer", sdp: munged });
+    const chan = await Promise.race([chanP, new Promise((r) => setTimeout(() => r(null), 5000))]);
+    const open = chan && await new Promise((resolve) => {
+      if (chan.readyState === "open") return resolve(true);
+      chan.addEventListener("open", () => resolve(true), { once: true });
+      setTimeout(() => resolve(false), 3000);
+    });
+    if (!open) {
+      try { peer.close(); } catch (err) {}
+      diag(`O QR não conectou (ICE: ${peer.iceConnectionState})`, null);
+      setConn("off", "Não conectou pelo QR");
+      return false;
+    }
+    wireChannel(peer, chan, null);
+    diag(`Conectou pelo QR em ${Math.round(performance.now() - t0)} ms`, peer);
+    return true;
+  } catch (err) {
+    diag(`O QR não conectou: ${err?.message || err}`, null);
+    setConn("off", "Não conectou pelo QR");
+    return false;
+  } finally {
+    spareBusy = false;
+  }
+}
+
 // Canal com o PC (pelo ntfy ou pela vaga): a mesma ligação dos eventos
 function wireChannel(peer, chan, onOpened) {
   pc = peer;
@@ -270,6 +466,7 @@ function wireChannel(peer, chan, onOpened) {
     setConn("on", "Conectado");
     setUpdated(false);
     send({ c: "hello", name: deviceName() });
+    if (identity) send({ c: "identity", fp: identity.fp });
     showTab(tab, true);
     onOpened?.();
   };
@@ -531,6 +728,8 @@ function onMessage(m) {
     renderChapters(m.videoId === st.videoId ? m.items || [] : []);
   } else if (m.t === "captions") {
     renderCaptions(m.items || [], m.cur || "");
+  } else if (m.t === "known") {
+    setKnown(true);
   } else if (m.t === "spare") {
     onSpare(m).catch((err) => diag(`Vaga não preparada: ${err?.message || err}`));
   } else if (m.t === "toast") {
@@ -1362,6 +1561,13 @@ async function main() {
   renderDiag();
   markRate(true);
   requestAnimationFrame(frame);
+  try { identity = await loadIdentity(); } catch (err) {}
+  renderPairCard();
+  $("btnScanPc").addEventListener("click", scanPcQr);
+  $("btnScanClose").addEventListener("click", stopScan);
+  $("scanSheet").addEventListener("close", stopScan);
+  $("btnPairHide").addEventListener("click", () => setKnown(true));
+  window.connectByInvite = connectByInvite; // testes
   ctx = await keys(secret);
   connect();
 }

@@ -337,6 +337,45 @@ input[type="range"]::-moz-range-thumb { width: 16px; height: 16px; border: 0; bo
 .item .act svg { width: 20px; height: 20px; fill: currentColor; }
 .empty { color: var(--text-3); text-align: center; padding: 28px 8px; font-size: 14px; }
 
+/* Pareamento sem serviço de fora: QR para a webcam do PC e o código */
+.pair-card {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  margin: 0 0 12px;
+  padding: 12px;
+  border-radius: var(--r);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  opacity: 1;
+  transition: opacity 0.3s ease, display 0.3s allow-discrete;
+}
+.pair-card[hidden] { display: none; opacity: 0; }
+@starting-style { .pair-card:not([hidden]) { opacity: 0; } }
+.pair-text { flex: 1; min-width: 0; }
+.pair-text h2 { font-size: 15px; margin: 0 0 4px; }
+.pair-text p { margin: 0 0 6px; font-size: 12.5px; color: var(--text-2); }
+.pair-code { font: 600 12px/1.5 ui-monospace, Consolas, monospace; color: var(--text) !important; letter-spacing: 0.04em; word-break: break-all; }
+.pair-hide { background: none; border: 0; padding: 0; color: var(--text-3); font: inherit; font-size: 12.5px; text-decoration: underline; cursor: pointer; }
+.pair-qr { width: 132px; height: 132px; flex: none; border-radius: 8px; background: #fff; image-rendering: pixelated; }
+
+/* Botão de ler o QR do PC (sem conexão) e o leitor */
+.qr-row > div { display: flex; justify-content: center; }
+.qr-btn {
+  margin: 0 0 12px;
+  padding: 10px 18px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 214, 0, 0.45);
+  background: rgba(255, 214, 0, 0.12);
+  color: var(--text);
+  font: inherit;
+  font-weight: 600;
+  transition: transform 0.18s var(--ease), background 0.2s ease;
+}
+.qr-btn:active { transform: scale(0.96); }
+.scan-video { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: var(--r); background: #000; display: block; }
+.scan-close { display: block; margin: 12px auto 0; }
+
 /* Diagnóstico da reconexão (fase de teste) */
 .diag {
   list-style: none;

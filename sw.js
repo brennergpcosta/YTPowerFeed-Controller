@@ -1,7 +1,7 @@
 // Guarda a página para abrir rápido (e sem rede, mostrando "Desconectado"); a rede tem prioridade,
 // então uma versão nova chega na próxima abertura.
-const CACHE = "ytpf-remote-v13";
-const FILES = ["./", "index.html", "style.css", "app.js", "manifest.webmanifest", "icons/icon-192.png"];
+const CACHE = "ytpf-remote-v14";
+const FILES = ["./", "index.html", "style.css", "app.js", "vendor/qrcode.js", "manifest.webmanifest", "icons/icon-192.png"];
 
 self.addEventListener("install", (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(FILES)).then(() => self.skipWaiting()));

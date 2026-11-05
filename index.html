@@ -20,6 +20,23 @@
     <span class="conn" id="conn" data-state="off"><span class="dot"></span><span id="connText">Desconectado</span></span>
   </header>
 
+  <!-- Pareamento sem serviço de fora: o PC lê este QR pela webcam (ou o código digitado). Some quando
+       o PC já conhece este celular -->
+  <section class="pair-card" id="pairCard" hidden>
+    <div class="pair-text">
+      <h2>Parear com o PC</h2>
+      <p>Para conectar sem internet: no PC, abra o pop-up da extensão &gt; Player &gt; Controle remoto &gt; <b>Parear pela webcam ou código</b> e mostre este QR para a webcam. Sem webcam, digite o código.</p>
+      <p class="pair-code" id="pairCode"></p>
+      <button type="button" class="pair-hide" id="btnPairHide">Já pareei</button>
+    </div>
+    <canvas class="pair-qr" id="pairQr" width="200" height="200" aria-label="QR code de pareamento"></canvas>
+  </section>
+
+  <!-- Sem conexão: ler o QR de conexão do PC -->
+  <div class="notice qr-row" id="qrRow" hidden>
+    <div><button type="button" class="qr-btn" id="btnScanPc">Ler QR do PC</button></div>
+  </div>
+
   <!-- Diagnóstico da reconexão (fase de teste): como e por onde o celular voltou -->
   <ul class="diag" id="diag" hidden></ul>
 
@@ -136,6 +153,14 @@
     <div class="sheet-grip" aria-hidden="true"></div>
     <h2>Capítulos</h2>
     <div class="chap-list" id="chapList"></div>
+  </dialog>
+
+  <dialog class="sheet scan-sheet" id="scanSheet" aria-label="Ler QR do PC">
+    <div class="sheet-grip" aria-hidden="true"></div>
+    <h2>Ler QR do PC</h2>
+    <p class="sheet-hint" id="scanMsg">Aponte para o QR de conexão no PC</p>
+    <video class="scan-video" id="scanVideo" muted playsinline></video>
+    <button type="button" class="qr-btn scan-close" id="btnScanClose">Cancelar</button>
   </dialog>
 
   <dialog class="sheet" id="ccSheet" aria-label="Legendas">
