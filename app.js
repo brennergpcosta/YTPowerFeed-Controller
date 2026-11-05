@@ -530,8 +530,9 @@ async function connectByInvite(text) {
       setTimeout(() => resolve(false), 3000);
     });
     if (!open) {
+      const why = await iceSummary(peer);
       try { peer.close(); } catch (err) {}
-      diag(`O QR não conectou (ICE: ${peer.iceConnectionState})`, null);
+      diag(`O QR não conectou (ICE: ${peer.iceConnectionState}; ${why})`, null);
       setConn("off", "Não conectou pelo QR");
       return false;
     }
@@ -632,6 +633,24 @@ async function useSpare() {
   } finally {
     spareBusy = false;
     awayMs = 0;
+  }
+}
+
+// Resumo do ICE para o diagnóstico de falha: endereços do PC que o celular conseguiu usar e o
+// estado dos pares testados
+async function iceSummary(peer) {
+  try {
+    const st = await peer.getStats();
+    let remote = 0, mdns = 0, pairs = 0;
+    const states = {};
+    st.forEach((r) => {
+      if (r.type === "remote-candidate") { remote++; if (!r.address || /\.local$/i.test(r.address)) mdns++; }
+      if (r.type === "candidate-pair") { pairs++; states[r.state] = (states[r.state] || 0) + 1; }
+    });
+    const s = Object.entries(states).map(([k, v]) => `${v} ${k}`).join(", ");
+    return `endereços do PC: ${remote}${mdns ? ` (${mdns} sem resolver)` : ""}; pares: ${pairs}${s ? ` (${s})` : ""}`;
+  } catch (err) {
+    return "sem estatísticas";
   }
 }
 
