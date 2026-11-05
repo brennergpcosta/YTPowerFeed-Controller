@@ -325,6 +325,27 @@ input[type="range"]::-moz-range-thumb { width: 16px; height: 16px; border: 0; bo
 .item .act svg { width: 20px; height: 20px; fill: currentColor; }
 .empty { color: var(--text-3); text-align: center; padding: 28px 8px; font-size: 14px; }
 
+/* Aviso de extensão atualizada no PC: entra e sai deslizando a altura */
+.notice {
+  display: grid;
+  grid-template-rows: 1fr;
+  opacity: 1;
+  transition: grid-template-rows 0.35s var(--ease), opacity 0.35s ease, display 0.35s allow-discrete;
+}
+.notice[hidden] { display: none; grid-template-rows: 0fr; opacity: 0; }
+@starting-style { .notice:not([hidden]) { grid-template-rows: 0fr; opacity: 0; } }
+.notice > div { overflow: hidden; min-height: 0; }
+.notice p {
+  margin: 0 0 12px;
+  padding: 10px 14px;
+  border-radius: var(--r);
+  border: 1px solid rgba(255, 214, 0, 0.35);
+  background: rgba(255, 214, 0, 0.1);
+  font-size: 14px;
+  color: var(--text);
+}
+.notice strong { color: var(--signal); font-weight: 600; }
+
 .toast {
   position: fixed;
   left: 50%;

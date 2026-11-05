@@ -107,6 +107,12 @@ let attempt = 0;      // tentativa em andamento (0: nenhuma)
 let attemptAt = 0;
 let retryTimer = 0;
 let fails = 0;
+let pcUpdated = false; // a extensão foi atualizada no PC (a aba antiga avisou antes de largar)
+
+function setUpdated(on) {
+  pcUpdated = on;
+  $("updNotice").hidden = !on;
+}
 
 function setConn(state, text) {
   $("conn").dataset.state = state;
@@ -251,6 +257,7 @@ async function connect() {
       fails = 0;
       lastMsgAt = Date.now();
       setConn("on", "Conectado");
+      setUpdated(false);
       send({ c: "hello", name: deviceName() });
       showTab(tab, true);
     };
@@ -282,7 +289,7 @@ async function connect() {
     waiting = null;
     fails++;
     esAlive = 0; // a próxima tentativa abre a escuta de novo: pode ter sido ela que morreu
-    setConn("off", fails > 1 ? "PC não encontrado. Abra o YouTube no PC" : "Procurando o PC…");
+    setConn("off", fails > 1 ? (pcUpdated ? "Recarregue o YouTube no PC" : "PC não encontrado. Abra ou recarregue o YouTube no PC") : "Procurando o PC…");
     scheduleRetry();
   } finally {
     if (attempt === my) attempt = 0;
@@ -364,6 +371,8 @@ function onMessage(m) {
     renderCaptions(m.items || [], m.cur || "");
   } else if (m.t === "toast") {
     toast(m.text);
+  } else if (m.t === "updated") {
+    setUpdated(true);
   }
 }
 
