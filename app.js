@@ -96,10 +96,15 @@ const deviceName = () => {
 // ---------------------------------------------------------------------------------------------
 let ctx = null;
 let es = null;
+let esAlive = 0;      // último sinal do ntfy nesta escuta (abertura, keepalive ou mensagem)
+let esReady = null;   // promessa: escuta aberta
+let esAt = 0;         // quando a escuta foi aberta
 let pc = null;
 let dc = null;
-let waiting = null;   // resolve da resposta esperada
-let connecting = false;
+let waiting = null;   // recebe a resposta do PC à oferta em andamento
+let gen = 0;          // tentativa mais nova: uma tentativa velha para no próximo passo
+let attempt = 0;      // tentativa em andamento (0: nenhuma)
+let attemptAt = 0;
 let retryTimer = 0;
 let fails = 0;
 
@@ -108,10 +113,19 @@ function setConn(state, text) {
   $("connText").textContent = text;
 }
 
+// Escuta do tópico, por onde chega a resposta do PC. Depois de o celular dormir ou trocar de rede, a
+// escuta pode continuar "aberta" sem receber mais nada (a conexão morreu calada): por isso ela é
+// aberta de novo ao voltar e quando o ntfy fica calado (ele manda um keepalive a cada ~45 s)
 function listenRelay() {
   es?.close();
-  es = new EventSource(`${RELAY}/${ctx.topic}/sse`);
-  es.onmessage = async (e) => {
+  const mine = new EventSource(`${RELAY}/${ctx.topic}/sse`);
+  es = mine;
+  esAlive = 0;
+  esAt = Date.now();
+  const alive = () => { if (es === mine) esAlive = Date.now(); };
+  mine.addEventListener("keepalive", alive);
+  mine.onmessage = async (e) => {
+    alive();
     try {
       const env = JSON.parse(JSON.parse(e.data).message || "null");
       if (!env || env.f === me || typeof env.d !== "string") return;
@@ -121,105 +135,164 @@ function listenRelay() {
       if (msg.type === "answer" && msg.to === me && waiting) waiting(msg);
     } catch (err) {}
   };
-  return new Promise((resolve) => {
-    es.onopen = () => resolve();
+  esReady = new Promise((resolve) => {
+    mine.addEventListener("open", () => { alive(); resolve(); });
     setTimeout(resolve, 4000);
   });
+  return esReady;
 }
+// Escuta que deu sinal há pouco, ou que acabou de ser aberta (e ainda está abrindo)
+const relayFresh = () => !!es && es.readyState !== EventSource.CLOSED &&
+  (Date.now() - esAlive < 60000 || (!esAlive && Date.now() - esAt < 4000));
 
+// Sem "trickle": manda os candidatos numa mensagem só. Não espera todos: com um do STUN (srflx) já
+// conecta, então espera só mais um pouco por outros (antes eram até 3 s esperando os que não vêm)
 function iceDone(peer) {
   if (peer.iceGatheringState === "complete") return Promise.resolve();
   return new Promise((resolve) => {
-    const t = setTimeout(resolve, 3000);
-    peer.addEventListener("icegatheringstatechange", () => {
-      if (peer.iceGatheringState === "complete") { clearTimeout(t); resolve(); }
+    let quiet = 0;
+    const t = setTimeout(() => done(), 2500);
+    const done = () => { clearTimeout(t); clearTimeout(quiet); resolve(); };
+    peer.addEventListener("icegatheringstatechange", () => { if (peer.iceGatheringState === "complete") done(); });
+    peer.addEventListener("icecandidate", (e) => {
+      if (!e.candidate) { done(); return; }
+      if (/ typ srflx /.test(e.candidate.candidate)) { clearTimeout(quiet); quiet = setTimeout(done, 300); }
     });
   });
 }
 
 // Celular trancado: o sistema congela a página e a conexão morre sem avisar (o canal continua
 // "aberto" por um tempo). Ao voltar, e a cada poucos segundos sem notícia do PC, o celular manda
-// um "ping"; sem resposta em 2 s, a conexão é dada como morta e ele procura o PC de novo, sozinho
+// um "ping"; sem resposta em 1,5 s, a conexão é dada como morta e ele procura o PC de novo, sozinho
+const PING_MS = 1500;
 let lastMsgAt = 0;
-let connectingAt = 0;
 let pingTimer = 0;
+let hiddenAt = 0;
+let lastTick = Date.now();
 
 function dropConnection() {
-  try { dc?.close(); } catch (err) {}
-  try { pc?.close(); } catch (err) {}
+  const old = dc;
   dc = null;
+  try { old?.close(); } catch (err) {}
+  try { pc?.close(); } catch (err) {}
   pc = null;
 }
 
+// Para a tentativa em andamento (ela pode ter ficado parada com a página congelada)
+function abandonAttempt() {
+  if (!attempt) return;
+  gen++;
+  attempt = 0;
+  waiting = null;
+  if (dc?.readyState !== "open") dropConnection();
+}
+
+function reconnectNow() {
+  clearTimeout(pingTimer);
+  pingTimer = 0;
+  setConn("wait", "Reconectando…");
+  abandonAttempt();
+  dropConnection();
+  fails = 0;
+  // A rede deu problema: a escuta do ntfy pode ter morrido junto (abre de novo, junto com o ICE)
+  esAlive = 0;
+  connect();
+}
+
 function check(force) {
-  if (!ctx || document.hidden || connecting && Date.now() - connectingAt < 20000) return;
-  if (dc?.readyState !== "open") { fails = 0; connect(); return; }
+  if (!ctx || document.hidden || attempt && Date.now() - attemptAt < 20000) return;
+  if (attempt) abandonAttempt();
+  if (dc?.readyState !== "open") { if (force) fails = 0; connect(); return; }
+  // O próprio WebRTC já viu que caiu: nem precisa do ping
+  if (pc && ["failed", "closed"].includes(pc.connectionState)) { reconnectNow(); return; }
   if (pingTimer || (!force && Date.now() - lastMsgAt < 3000)) return;
   const sentAt = Date.now();
   try { dc.send(JSON.stringify({ c: "ping" })); } catch (err) {}
   pingTimer = setTimeout(() => {
     pingTimer = 0;
     if (lastMsgAt >= sentAt || document.hidden) return;
-    setConn("wait", "Reconectando…");
-    dropConnection();
-    fails = 0;
-    connect();
-  }, 2000);
+    reconnectNow();
+  }, PING_MS);
 }
-const wake = () => check(true);
+
+// Voltou de um tempo escondida ou congelada (ou trocou de rede): a escuta do ntfy e a tentativa em
+// andamento não valem mais; a escuta é aberta de novo já, junto com o ping
+function wake(e) {
+  if (document.hidden) { hiddenAt = hiddenAt || Date.now(); return; }
+  const slept = (hiddenAt && Date.now() - hiddenAt > 2000) || ["online", "resume", "frozen-gap"].includes(e?.type);
+  hiddenAt = 0;
+  if (slept && ctx) {
+    abandonAttempt();
+    if (!relayFresh() || esAlive) listenRelay();
+  }
+  check(true);
+}
 
 async function connect() {
-  // Um pedido que ficou parado com a página congelada não segura os próximos
-  if (connecting && Date.now() - connectingAt < 20000) return;
+  if (attempt && Date.now() - attemptAt < 20000) return;
   if (dc?.readyState === "open") return;
-  connecting = true;
-  connectingAt = Date.now();
+  abandonAttempt();
+  const my = ++gen;
+  const stale = () => my !== gen;
+  attempt = my;
+  attemptAt = Date.now();
   clearTimeout(retryTimer);
   setConn("wait", "Procurando o PC…");
   try {
-    if (!es || es.readyState === EventSource.CLOSED) await listenRelay();
+    // A escuta abre enquanto os candidatos são juntados
+    const ready = relayFresh() ? esReady : listenRelay();
     try { pc?.close(); } catch (err) {}
-    pc = new RTCPeerConnection({ iceServers: ICE });
-    dc = pc.createDataChannel("ytpf");
-    dc.onopen = () => {
+    const peer = new RTCPeerConnection({ iceServers: ICE });
+    const chan = peer.createDataChannel("ytpf");
+    pc = peer;
+    dc = chan;
+    chan.onopen = () => {
+      if (dc !== chan) return;
       fails = 0;
       lastMsgAt = Date.now();
       setConn("on", "Conectado");
       send({ c: "hello", name: deviceName() });
       showTab(tab, true);
     };
-    const mine = dc;
-    dc.onclose = () => { if (dc !== mine && dc) return; setConn("off", "Desconectado"); scheduleRetry(); };
-    dc.onmessage = (e) => { lastMsgAt = Date.now(); try { onMessage(JSON.parse(e.data)); } catch (err) {} };
-    pc.onconnectionstatechange = () => {
-      if (pc.connectionState === "failed") { setConn("off", "A conexão caiu"); scheduleRetry(); }
+    chan.onclose = () => { if (dc !== chan) return; dc = null; setConn("off", "Desconectado"); scheduleRetry(true); };
+    chan.onmessage = (e) => { lastMsgAt = Date.now(); try { onMessage(JSON.parse(e.data)); } catch (err) {} };
+    peer.onconnectionstatechange = () => {
+      if (pc !== peer) return;
+      if (peer.connectionState === "failed") { dropConnection(); setConn("off", "A conexão caiu"); scheduleRetry(true); }
+      else if (peer.connectionState === "disconnected") check(true);
     };
-    await pc.setLocalDescription(await pc.createOffer());
-    await iceDone(pc);
+    await peer.setLocalDescription(await peer.createOffer());
+    await Promise.all([iceDone(peer), ready]);
+    if (stale()) return;
+    // Cada oferta tem um id, que o PC devolve: uma resposta atrasada a uma oferta velha não serve
+    const oid = Math.random().toString(36).slice(2, 10);
     const answer = new Promise((resolve, reject) => {
-      waiting = resolve;
-      setTimeout(() => reject(new Error("sem resposta")), 9000);
+      waiting = (m) => { if (m.o === undefined || m.o === oid) resolve(m); };
+      setTimeout(() => reject(new Error("sem resposta")), 8000);
     });
-    await publish(ctx, { type: "offer", sdp: pc.localDescription.sdp, name: deviceName() });
+    await publish(ctx, { type: "offer", o: oid, sdp: peer.localDescription.sdp, name: deviceName() });
     const msg = await answer;
+    if (stale()) return;
     waiting = null;
-    await pc.setRemoteDescription({ type: "answer", sdp: msg.sdp });
+    await peer.setRemoteDescription({ type: "answer", sdp: msg.sdp });
     // Conectando: o onopen do canal confirma
-    setTimeout(() => { if (dc === mine && dc.readyState !== "open") scheduleRetry(); }, 10000);
+    setTimeout(() => { if (dc === chan && chan.readyState !== "open") { dropConnection(); scheduleRetry(); } }, 8000);
   } catch (err) {
+    if (stale()) return;
     waiting = null;
     fails++;
+    esAlive = 0; // a próxima tentativa abre a escuta de novo: pode ter sido ela que morreu
     setConn("off", fails > 1 ? "PC não encontrado. Abra o YouTube no PC" : "Procurando o PC…");
     scheduleRetry();
   } finally {
-    connecting = false;
+    if (attempt === my) attempt = 0;
   }
 }
 
-function scheduleRetry() {
+function scheduleRetry(soon) {
   clearTimeout(retryTimer);
   if (document.hidden) return;
-  retryTimer = setTimeout(connect, Math.min(15000, 2000 + fails * 2000));
+  retryTimer = setTimeout(connect, soon ? 300 : Math.min(15000, 1000 + fails * 2000));
 }
 
 function send(obj) {
@@ -229,11 +302,18 @@ function send(obj) {
 
 // Ao destravar o celular ou voltar para a página: confere a conexão e, morta, procura o PC
 document.addEventListener("visibilitychange", wake);
+document.addEventListener("resume", wake);
 window.addEventListener("pageshow", wake);
 window.addEventListener("online", wake);
 window.addEventListener("focus", wake);
-// Com a página à vista: conexão parada (sem notícia do PC) volta sozinha
-setInterval(() => check(false), 3000);
+// Com a página à vista: conexão parada (sem notícia do PC) volta sozinha. Um intervalo bem maior
+// que o normal entre as voltas quer dizer que a página ficou congelada
+setInterval(() => {
+  const gap = Date.now() - lastTick;
+  lastTick = Date.now();
+  if (gap > 10000) wake({ type: "frozen-gap" });
+  else check(false);
+}, 3000);
 
 // ---------------------------------------------------------------------------------------------
 // Tocando agora
