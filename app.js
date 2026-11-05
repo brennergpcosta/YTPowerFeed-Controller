@@ -320,6 +320,28 @@ async function loadIdentity() {
   return { cert, fp, code };
 }
 
+// Desfazer o pareamento: o PC esquece este celular (se estiver conectado) e o celular ganha um
+// certificado novo, ou seja, outra identidade e outro QR de pareamento
+async function forgetPairing() {
+  if (!confirm("Desfazer o pareamento deste celular? Para conectar sem internet de novo, será preciso parear outra vez.")) return;
+  if (identity && dc?.readyState === "open") send({ c: "forget", fp: identity.fp });
+  closeSpare();
+  try { localStorage.removeItem(KNOWN); } catch (err) {}
+  try {
+    const db = await idb();
+    await new Promise((resolve) => {
+      const t = db.transaction("kv", "readwrite");
+      t.objectStore("kv").delete("cert");
+      t.oncomplete = resolve;
+      t.onerror = resolve;
+    });
+    identity = await loadIdentity();
+  } catch (err) {}
+  renderPairCard();
+  $("pairCard").hidden = false;
+  toast("Pareamento desfeito: este é o QR novo");
+}
+
 // O PC já conhece este celular: o cartão de pareamento some
 function setKnown(on) {
   try { if (on) localStorage.setItem(KNOWN, identity?.fp || ""); } catch (err) {}
@@ -1647,6 +1669,7 @@ async function main() {
   // Mostrar o QR de pareamento a qualquer hora (pelo botão sem conexão, ou tocando na versão)
   const showPair = () => { renderPairCard(); $("pairCard").hidden = false; window.scrollTo({ top: 0, behavior: "smooth" }); };
   $("btnShowPair").addEventListener("click", showPair);
+  $("btnPairForget").addEventListener("click", forgetPairing);
   $("pcVer").addEventListener("click", () => { if ($("pairCard").hidden) showPair(); else $("pairCard").hidden = true; });
   window.connectByInvite = connectByInvite; // testes
   ctx = await keys(secret);
