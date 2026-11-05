@@ -71,6 +71,9 @@ button { font: inherit; color: inherit; }
   border: 1px solid var(--line);
   transition: color 0.3s ease, border-color 0.3s ease;
 }
+/* Texto longo (sem o PC, limite do ntfy) quebra em vez de empurrar o nome; toque procura o PC */
+.conn { flex: 0 1 auto; max-width: 62%; cursor: pointer; }
+.conn .dot { flex: none; }
 .conn .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-3); transition: background 0.3s ease; }
 .conn[data-state="on"] .dot { background: var(--ok); }
 .conn[data-state="wait"] .dot { background: var(--warn); animation: pulse 1.2s ease-in-out infinite; }

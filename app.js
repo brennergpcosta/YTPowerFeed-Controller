@@ -64,10 +64,14 @@ async function publish(ctx, obj) {
   const id = Math.random().toString(36).slice(2, 10);
   const n = Math.ceil(data.length / CHUNK);
   for (let p = 0; p < n; p++) {
-    await fetch(`${RELAY}/${ctx.topic}?cache=no`, {
+    const r = await fetch(`${RELAY}/${ctx.topic}?cache=no`, {
       method: "POST",
       body: JSON.stringify({ f: me, i: id, p, n, d: data.slice(p * CHUNK, (p + 1) * CHUNK) })
     });
+    // O ntfy.sh grátis aceita 250 mensagens por dia por endereço de internet (o PC e o celular no
+    // mesmo Wi-Fi contam juntos); passou disso, responde 429 até o dia virar
+    if (r.status === 429) throw Object.assign(new Error("limite do ntfy"), { quota: true });
+    if (!r.ok) throw new Error(`ntfy: HTTP ${r.status}`);
   }
 }
 
@@ -107,6 +111,7 @@ let attempt = 0;      // tentativa em andamento (0: nenhuma)
 let attemptAt = 0;
 let retryTimer = 0;
 let fails = 0;
+let quotaUntil = 0;   // limite diário do ntfy.sh atingido: sem tentar até esse horário
 let pcUpdated = false; // a extensão foi atualizada no PC (a aba antiga avisou antes de largar)
 
 // Versão da extensão no PC, ao lado do nome (fica a última conhecida)
@@ -216,7 +221,9 @@ function reconnectNow() {
 function check(force) {
   if (!ctx || document.hidden || attempt && Date.now() - attemptAt < 20000) return;
   if (attempt) abandonAttempt();
-  if (dc?.readyState !== "open") { if (force) fails = 0; connect(); return; }
+  // Desconectado: só uma volta do usuário procura o PC na hora; o resto fica com o scheduleRetry,
+  // que espera cada vez mais (cada tentativa gasta mensagens do ntfy, que tem limite por dia)
+  if (dc?.readyState !== "open") { if (force) { fails = 0; connect(); } return; }
   // O próprio WebRTC já viu que caiu: nem precisa do ping
   if (pc && ["failed", "closed"].includes(pc.connectionState)) { reconnectNow(); return; }
   if (pingTimer || (!force && Date.now() - lastMsgAt < 3000)) return;
@@ -245,6 +252,7 @@ function wake(e) {
 async function connect() {
   if (attempt && Date.now() - attemptAt < 20000) return;
   if (dc?.readyState === "open") return;
+  if (Date.now() < quotaUntil) { showQuota(); return; }
   abandonAttempt();
   const my = ++gen;
   const stale = () => my !== gen;
@@ -295,6 +303,7 @@ async function connect() {
   } catch (err) {
     if (stale()) return;
     waiting = null;
+    if (err?.quota) { await onQuota(); return; }
     fails++;
     esAlive = 0; // a próxima tentativa abre a escuta de novo: pode ter sido ela que morreu
     setConn("off", fails > 1 ? (pcUpdated ? "Recarregue o YouTube no PC" : "PC não encontrado. Abra ou recarregue o YouTube no PC") : "Procurando o PC…");
@@ -304,16 +313,37 @@ async function connect() {
   }
 }
 
+// Sem o PC: tenta de novo em 2, 5, 10, 20, 40 e 60 s; depois de 10 tentativas, só quando o usuário
+// voltar para a página ou tocar no estado da conexão
+const RETRY_S = [2, 5, 10, 20, 40, 60];
 function scheduleRetry(soon) {
   clearTimeout(retryTimer);
   if (document.hidden) return;
-  retryTimer = setTimeout(connect, soon ? 300 : Math.min(15000, 1000 + fails * 2000));
+  if (!soon && fails >= 10) { setConn("off", "PC não encontrado. Toque aqui para procurar"); return; }
+  retryTimer = setTimeout(connect, soon ? 300 : RETRY_S[Math.min(fails, RETRY_S.length) - 1] * 1000 || 2000);
+}
+
+async function onQuota() {
+  let reset = 0;
+  try { reset = ((await (await fetch(`${RELAY}/v1/account`)).json())?.stats?.reset_at || 0) * 1000; } catch (err) {}
+  quotaUntil = reset > Date.now() ? reset : Date.now() + 30 * 60000;
+  showQuota();
+  clearTimeout(retryTimer);
+  retryTimer = setTimeout(() => { if (!document.hidden) { fails = 0; connect(); } }, Math.min(quotaUntil - Date.now() + 5000, 2 ** 31 - 1));
+}
+
+function showQuota() {
+  const at = new Date(quotaUntil).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+  setConn("off", `Limite diário do ntfy.sh atingido. Volta às ${at}`);
 }
 
 function send(obj) {
   if (dc?.readyState === "open") { dc.send(JSON.stringify(obj)); check(false); }
   else wake();
 }
+
+// Tocar no estado da conexão procura o PC na hora
+$("conn").addEventListener("click", () => { if (dc?.readyState !== "open") wake({ type: "tap" }); });
 
 // Ao destravar o celular ou voltar para a página: confere a conexão e, morta, procura o PC
 document.addEventListener("visibilitychange", wake);
