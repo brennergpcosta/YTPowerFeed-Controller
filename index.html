@@ -70,6 +70,25 @@
           <svg viewBox="0 0 24 24" class="i-fs-exit"><path d="M5 16h3v3h2v-5H5v2zm3-8H5v2h5V5H8v3zm6 11h2v-3h3v-2h-5v5zm2-11V5h-2v5h5V8h-3z"/></svg>
         </button>
       </div>
+      <!-- Ações do vídeo atual -->
+      <div class="acts">
+        <button class="ctl small" id="btnLike" aria-label="Gostei" aria-pressed="false" disabled>
+          <svg viewBox="0 0 24 24"><path d="M1 21h4V9H1v12zm22-11a2 2 0 0 0-2-2h-6.3l1-4.6v-.3c0-.4-.2-.8-.5-1.1L14.2 1 7.6 7.6C7.2 8 7 8.4 7 9v10a2 2 0 0 0 2 2h9c.8 0 1.5-.5 1.8-1.2l3-7.1c.1-.2.2-.5.2-.7v-2z"/></svg>
+        </button>
+        <button class="ctl small" id="btnWl" aria-label="Assistir mais tarde" aria-pressed="false" disabled>
+          <svg viewBox="0 0 24 24"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm0 18a8 8 0 1 1 0-16 8 8 0 0 1 0 16zm.5-13H11v6l5.2 3.2.8-1.3-4.5-2.7V7z"/></svg>
+        </button>
+        <button class="ctl small" id="btnChap" aria-label="Capítulos" aria-haspopup="dialog" disabled>
+          <svg viewBox="0 0 24 24"><path d="M3 13h2v-2H3v2zm0 4h2v-2H3v2zm0-8h2V7H3v2zm4 4h14v-2H7v2zm0 4h14v-2H7v2zM7 7v2h14V7H7z"/></svg>
+        </button>
+        <button class="ctl small" id="btnCc" aria-label="Legendas" aria-haspopup="dialog" disabled>
+          <svg viewBox="0 0 24 24"><path d="M19 4H5a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2zm-8 7H9.5v-.5h-2v3h2V13H11v1a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1v-4a1 1 0 0 1 1-1h3a1 1 0 0 1 1 1v1zm7 0h-1.5v-.5h-2v3h2V13H18v1a1 1 0 0 1-1 1h-3a1 1 0 0 1-1-1v-4a1 1 0 0 1 1-1h3a1 1 0 0 1 1 1v1z"/></svg>
+        </button>
+        <button class="ctl small" id="btnSleep" aria-label="Timer para desligar" aria-haspopup="dialog">
+          <svg viewBox="0 0 24 24"><path d="M12.3 2C6.6 1.8 2 6.4 2 12a10 10 0 0 0 18.7 5C13.1 16.7 8.5 8.5 12.3 2z"/></svg>
+          <span class="act-text" id="sleepText"></span>
+        </button>
+      </div>
       <div class="opts">
         <div class="rates" id="rateSeg" role="radiogroup" aria-label="Velocidade"></div>
         <div class="seg" id="resSeg" role="radiogroup" aria-label="Modo de resolução">
@@ -96,6 +115,25 @@
     <h2>Onde tocar no PC</h2>
     <p class="sheet-hint">Travado numa aba, tudo que você mandar toca nela, esteja onde estiver o foco no PC.</p>
     <div class="tab-list" id="tabList"></div>
+  </dialog>
+
+  <dialog class="sheet" id="sleepSheet" aria-label="Timer para desligar">
+    <div class="sheet-grip" aria-hidden="true"></div>
+    <h2>Timer para desligar</h2>
+    <p class="sheet-hint">O PC pausa o vídeo sozinho, mesmo com o celular trancado.</p>
+    <div class="tab-list" id="sleepList"></div>
+  </dialog>
+
+  <dialog class="sheet" id="chapSheet" aria-label="Capítulos">
+    <div class="sheet-grip" aria-hidden="true"></div>
+    <h2>Capítulos</h2>
+    <div class="chap-list" id="chapList"></div>
+  </dialog>
+
+  <dialog class="sheet" id="ccSheet" aria-label="Legendas">
+    <div class="sheet-grip" aria-hidden="true"></div>
+    <h2>Legendas</h2>
+    <div class="tab-list" id="ccList"></div>
   </dialog>
 
   <dialog class="sheet" id="vidSheet" aria-label="Opções do vídeo">

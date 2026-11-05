@@ -255,6 +255,11 @@ const setFill = (input) => input.style.setProperty("--p", `${(input.value - inpu
 
 function onMessage(m) {
   if (m.t === "state") {
+    // O que o celular acabou de mudar fica como está até o PC confirmar (sem voltar e ir)
+    for (const [k, p] of Object.entries(pend)) {
+      if (performance.now() < p.until && m.videoId === p.videoId) m[k] = p.v;
+      else delete pend[k];
+    }
     st = m;
     stAt = performance.now();
     if (m.queue) { queue = m.queue; if (tab === "queue") renderQueue(); }
@@ -273,6 +278,10 @@ function onMessage(m) {
     setWlItems(withWlEdits(m.items || []));
   } else if (m.t === "tabs") {
     renderTabs(m.items || [], m.pin || 0);
+  } else if (m.t === "chapters") {
+    renderChapters(m.videoId === st.videoId ? m.items || [] : []);
+  } else if (m.t === "captions") {
+    renderCaptions(m.items || [], m.cur || "");
   } else if (m.t === "toast") {
     toast(m.text);
   }
@@ -305,6 +314,125 @@ function renderNow() {
   $("btnFs").classList.toggle("on", !!st.fs);
   for (const b of $("resSeg").children) b.classList.toggle("on", b.dataset.res === st.resMode);
   $("tDur").textContent = fmt(st.duration);
+  renderActs(has);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Ações do vídeo atual: Gostei, Assistir mais tarde, Capítulos, Legendas e Timer
+// ---------------------------------------------------------------------------------------------
+const pend = {}; // mudado aqui, esperando o PC: chave → { v, videoId, until }
+function hold(k, v) {
+  st[k] = v;
+  pend[k] = { v, videoId: st.videoId, until: performance.now() + 3000 };
+}
+
+function setAct(id, on, enabled) {
+  const b = $(id);
+  b.classList.toggle("on", !!on);
+  if (b.hasAttribute("aria-pressed")) b.setAttribute("aria-pressed", String(!!on));
+  b.disabled = !enabled;
+}
+
+function renderActs(has) {
+  setAct("btnLike", has && st.liked, has && !st.ad);
+  setAct("btnWl", has && st.inWl, has && !st.ad);
+  setAct("btnChap", false, has && st.chapters > 0);
+  setAct("btnCc", has && st.cc, has && st.ccCount > 0);
+  setAct("btnSleep", !!st.sleep, true);
+  sleepTick();
+}
+
+// Contagem do timer no botão (anda entre uma atualização e outra)
+function sleepLeft() {
+  if (!st.sleep || st.sleep.end) return null;
+  return Math.max(0, (st.sleep.left || 0) - (performance.now() - stAt) / 1000);
+}
+function sleepTick() {
+  const left = sleepLeft();
+  const text = st.sleep?.end ? "fim" : left != null ? fmt(Math.ceil(left)) : "";
+  setText($("sleepText"), text);
+  $("btnSleep").setAttribute("aria-label", text ? `Timer para desligar: ${st.sleep.end ? "no fim deste vídeo" : `faltam ${text}`}` : "Timer para desligar");
+}
+
+const SLEEP_OPTS = [0, 15, 30, 45, 60, 90, "end"];
+let sleepPick = 0;
+function renderSleep() {
+  const cur = !st.sleep ? 0 : st.sleep.end ? "end" : sleepPick || -1;
+  $("sleepList").replaceChildren(...SLEEP_OPTS.map((o, i) => tabOpt({
+    on: o === cur,
+    icon: o === 0 ? ICON_OFF : o === "end" ? ICON_END : ICON_MOON,
+    title: o === 0 ? "Desligado" : o === "end" ? "No fim deste vídeo" : `${o} min`,
+    sub: o === cur && o !== 0 && o !== "end" && sleepLeft() != null ? `Faltam ${fmt(Math.ceil(sleepLeft()))}` : "",
+    onTap: () => {
+      sleepPick = typeof o === "number" ? o : 0;
+      if (o === "end" && !st.videoId) { toast("Nada tocando no PC"); return; }
+      send(o === 0 ? { c: "sleep" } : o === "end" ? { c: "sleep", end: true } : { c: "sleep", min: o });
+      $("sleepSheet").close();
+    }
+  }, i)));
+}
+
+// Capítulos: o atual marcado, acompanhando o tempo
+let chapters = [];
+let chapCur = -1;
+function renderChapters(items) {
+  chapters = items;
+  chapCur = -1;
+  const list = $("chapList");
+  if (!items.length) { list.replaceChildren(emptyEl("Este vídeo não tem capítulos")); return; }
+  list.replaceChildren(...items.map((c, i) => {
+    const b = document.createElement("button");
+    b.className = "chap";
+    b.style.animationDelay = `${Math.min(i, 12) * 25}ms`;
+    const img = document.createElement("img");
+    img.alt = "";
+    img.loading = "lazy";
+    if (/^https:\/\//.test(c.thumb || "")) img.src = c.thumb;
+    const txt = document.createElement("span");
+    txt.className = "txt";
+    const t = document.createElement("div");
+    t.className = "t";
+    t.textContent = c.title || `Capítulo ${i + 1}`;
+    const tm = document.createElement("div");
+    tm.className = "c";
+    tm.textContent = fmt(c.start);
+    txt.append(t, tm);
+    b.append(img, txt);
+    b.addEventListener("click", () => {
+      send({ c: "seek", time: c.start });
+      st.time = c.start;
+      stAt = performance.now();
+      markChapter(true);
+      setTimeout(() => $("chapSheet").close(), 180);
+    });
+    return b;
+  }));
+  markChapter(false, true);
+}
+function markChapter(smooth, scroll) {
+  if (!chapters.length) return;
+  const t = curTime();
+  let i = 0;
+  while (i + 1 < chapters.length && chapters[i + 1].start <= t + 0.25) i++;
+  if (i === chapCur && !scroll) return;
+  chapCur = i;
+  const rows = $("chapList").children;
+  for (let k = 0; k < rows.length; k++) rows[k].classList.toggle("on", k === i);
+  if (scroll && rows[i]) rows[i].scrollIntoView({ block: "center", behavior: smooth ? "smooth" : "instant" });
+}
+
+function renderCaptions(items, cur) {
+  const set = (vssId) => {
+    send({ c: "ccSet", vssId });
+    hold("cc", !!vssId);
+    renderNow();
+    $("ccSheet").close();
+  };
+  const opts = [{ on: !cur, icon: ICON_OFF, title: "Desligadas", onTap: () => set("") }];
+  for (const it of items) {
+    opts.push({ on: !!cur && (cur === it.vssId || cur === it.lang), icon: ICON_CC, title: it.name, sub: it.auto ? "Geradas automaticamente" : "", onTap: () => set(it.vssId) });
+  }
+  $("ccList").replaceChildren(...opts.map(tabOpt));
 }
 
 // Velocidade: carrossel com as mesmas da extensão (0,25× a 5×); a escolhida desliza para o meio
@@ -350,6 +478,8 @@ function frame() {
     seek.value = st.duration ? Math.round(t / st.duration * 1000) : 0;
     setFill(seek);
   }
+  if (st.sleep) sleepTick();
+  if ($("chapSheet").open) markChapter(true);
   requestAnimationFrame(frame);
 }
 
@@ -773,6 +903,11 @@ function showTab(name, reload) {
 const ICON_FOCUS = '<svg viewBox="0 0 24 24"><path d="M21 3H3a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h5v2h8v-2h5a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2zm0 14H3V5h18v12z"/></svg>';
 const ICON_PIN = '<svg viewBox="0 0 24 24"><path d="M18 8h-1V6A5 5 0 0 0 7 6v2H6a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V10a2 2 0 0 0-2-2zM9 6a3 3 0 0 1 6 0v2H9V6zm9 14H6V10h12v10z"/></svg>';
 
+const ICON_OFF = '<svg viewBox="0 0 24 24"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zM4 12a8 8 0 0 1 12.9-6.3L5.7 16.9A7.9 7.9 0 0 1 4 12zm8 8a7.9 7.9 0 0 1-4.9-1.7L18.3 7.1A8 8 0 0 1 12 20z"/></svg>';
+const ICON_MOON = '<svg viewBox="0 0 24 24"><path d="M12.3 2C6.6 1.8 2 6.4 2 12a10 10 0 0 0 18.7 5C13.1 16.7 8.5 8.5 12.3 2z"/></svg>';
+const ICON_END = '<svg viewBox="0 0 24 24"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg>';
+const ICON_CC = '<svg viewBox="0 0 24 24"><path d="M19 4H5a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2zm-8 7H9.5v-.5h-2v3h2V13H11v1a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1v-4a1 1 0 0 1 1-1h3a1 1 0 0 1 1 1v1zm7 0h-1.5v-.5h-2v3h2V13H18v1a1 1 0 0 1-1 1h-3a1 1 0 0 1-1-1v-4a1 1 0 0 1 1-1h3a1 1 0 0 1 1 1v1z"/></svg>';
+
 function setText(el, text) { if (el.textContent !== text) el.textContent = text; }
 
 function tabOpt({ on, icon, title, sub, tags, onTap }, i) {
@@ -899,7 +1034,38 @@ function bindUi() {
     send({ c: "tabs" });
   });
   // Toque fora da folha fecha
-  for (const id of ["tabSheet", "vidSheet"]) $(id).addEventListener("click", (e) => { if (e.target === e.currentTarget) e.currentTarget.close(); });
+  for (const id of ["tabSheet", "vidSheet", "sleepSheet", "chapSheet", "ccSheet"]) $(id).addEventListener("click", (e) => { if (e.target === e.currentTarget) e.currentTarget.close(); });
+  // Ações do vídeo atual
+  const buzz = () => { if (navigator.vibrate) navigator.vibrate(10); };
+  $("btnLike").addEventListener("click", () => {
+    if (!st.videoId) return;
+    buzz();
+    hold("liked", !st.liked);
+    send({ c: "like", videoId: st.videoId, on: st.liked });
+    renderNow();
+  });
+  $("btnWl").addEventListener("click", () => {
+    if (!st.videoId) return;
+    buzz();
+    hold("inWl", !st.inWl);
+    send({ c: "wl", videoId: st.videoId, on: st.inWl });
+    renderNow();
+  });
+  $("btnChap").addEventListener("click", () => {
+    $("chapList").replaceChildren(emptyEl("Carregando os capítulos…"));
+    chapters = [];
+    $("chapSheet").showModal();
+    send({ c: "chapters" });
+  });
+  $("btnCc").addEventListener("click", () => {
+    $("ccList").replaceChildren(emptyEl("Procurando as legendas…"));
+    $("ccSheet").showModal();
+    send({ c: "captions" });
+  });
+  $("btnSleep").addEventListener("click", () => {
+    renderSleep();
+    $("sleepSheet").showModal();
+  });
   $("btnFs").addEventListener("click", () => {
     st.fs = !st.fs;
     send({ c: "fs", on: st.fs });
