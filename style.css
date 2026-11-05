@@ -378,6 +378,9 @@ input[type="range"]::-moz-range-thumb { width: 16px; height: 16px; border: 0; bo
 
 /* Início: faixas em carrossel (linhas como na Home do PC), filtros e Recomendados */
 .shelf { margin: 4px 0 14px; }
+.shelf.fresh { overflow: hidden; animation: item-grow 0.45s var(--ease) both; }
+.shelf.leaving { overflow: hidden; animation: item-leave 0.4s var(--ease) both; }
+.rail > .item.fresh { animation: item-in 0.35s var(--ease) both, item-glow 2.4s ease 0.3s both; }
 .shelf-h { display: flex; align-items: baseline; gap: 8px; font-size: 16px; font-weight: 600; margin: 6px 2px 6px; }
 .shelf-h .n { color: var(--text-3); font-size: 12.5px; font-weight: 400; }
 .rail {

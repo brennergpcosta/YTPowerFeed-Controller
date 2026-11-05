@@ -223,12 +223,14 @@ function onMessage(m) {
     if (m.auto && m.which === "subs") onSubsAuto(m.items || []);
     else if (m.which === tab && (tab !== "search" || m.q === lastQuery)) renderList(m.items, m.error, !!m.auto);
   } else if (m.t === "home") {
-    home = { sections: m.sections || [], chips: m.chips || [], chip: m.chip || 0, def: m.def ?? -1, items: m.items || [], cont: m.cont || "", error: m.error || "" };
+    home = { sections: m.sections || [], chips: m.chips || [], chip: m.chip || 0, def: m.def ?? -1, items: m.items || [], cont: m.cont || "", error: m.error || "", wlSlot: m.wlSlot ?? -1, wlRows: m.wlRows || 1 };
     if (tab === "home") renderHome();
   } else if (m.t === "recs") {
     onRecs(m);
   } else if (m.t === "wlChanged") {
     onWlChanged(m);
+  } else if (m.t === "wlList") {
+    setWlItems(withWlEdits(m.items || []));
   } else if (m.t === "tabs") {
     renderTabs(m.items || [], m.pin || 0);
   } else if (m.t === "toast") {
@@ -421,7 +423,9 @@ async function shareVideo(v) {
   } catch (err) {}
 }
 
+let lastMenuVideo = null;
 function openMenu(v, opts) {
+  lastMenuVideo = v;
   const sheet = $("vidSheet");
   $("vidThumb").src = thumbUrl(v.videoId);
   $("vidTitle").textContent = v.title || v.videoId;
@@ -447,7 +451,14 @@ const listItemEl = (v, i) => itemEl(v, i, { current: v.videoId === st.videoId, o
 function syncRows(box, items, make) {
   const old = new Map([...box.querySelectorAll(".item[data-id]")].map((r) => [r.dataset.id, r]));
   const keep = new Set(items.map((v) => v.videoId));
-  for (const [id, r] of old) if (!keep.has(id)) r.remove();
+  for (const [id, r] of old) {
+    if (keep.has(id)) continue;
+    old.delete(id);
+    r.removeAttribute("data-id");
+    r.style.animation = "";
+    r.classList.add("leaving");
+    setTimeout(() => r.remove(), 450);
+  }
   for (const e of box.querySelectorAll(".empty")) e.remove();
   let at = box.firstElementChild;
   items.forEach((v, i) => {
@@ -497,30 +508,33 @@ function shelfItemEl(key) {
   });
 }
 
+function shelfEl(s) {
+  const sec = document.createElement("section");
+  sec.className = "shelf";
+  sec.dataset.key = s.key;
+  const h = document.createElement("h3");
+  h.className = "shelf-h";
+  h.textContent = s.title;
+  const n = document.createElement("span");
+  n.className = "n";
+  n.textContent = s.items.length ? String(s.items.length) : "";
+  h.append(n);
+  const rail = document.createElement("div");
+  rail.className = "rail";
+  rail.dataset.key = s.key;
+  rail.style.setProperty("--rows", Math.min(s.rows, Math.max(1, s.items.length)));
+  const make = shelfItemEl(s.key);
+  if (s.items.length) rail.append(...s.items.map(make));
+  else rail.append(emptyEl("Nada aqui"));
+  sec.append(h, rail);
+  return sec;
+}
+
 function renderHome() {
   const list = $("list");
   if (!home) return list.replaceChildren(emptyEl("Carregando…"));
   const parts = [];
-  for (const s of home.sections) {
-    const sec = document.createElement("section");
-    sec.className = "shelf";
-    const h = document.createElement("h3");
-    h.className = "shelf-h";
-    h.textContent = s.title;
-    const n = document.createElement("span");
-    n.className = "n";
-    n.textContent = s.items.length ? String(s.items.length) : "";
-    h.append(n);
-    const rail = document.createElement("div");
-    rail.className = "rail";
-    rail.dataset.key = s.key;
-    rail.style.setProperty("--rows", Math.min(s.rows, Math.max(1, s.items.length)));
-    const make = shelfItemEl(s.key);
-    if (s.items.length) rail.append(...s.items.map(make));
-    else rail.append(emptyEl("Nada aqui"));
-    sec.append(h, rail);
-    parts.push(sec);
-  }
+  for (const s of home.sections) parts.push(shelfEl(s));
   const rh = document.createElement("h3");
   rh.className = "shelf-h";
   rh.textContent = "Recomendados";
@@ -627,15 +641,67 @@ function onSubsAuto(items) {
 }
 
 // Tirado do Assistir mais tarde: sai do carrossel dele fechando o espaço
+// Assistir mais tarde mudou pelo celular: o vídeo entra na frente (ou sai) na hora, e a lista de
+// verdade chega logo depois (wlList)
+const knownVideo = (id) => [...(home?.sections.flatMap((x) => x.items) || []), ...(home?.items || []), ...(lastMenuVideo ? [lastMenuVideo] : [])]
+  .find((v) => v.videoId === id);
+
+// Mudanças feitas pelo celular valem por 1 min por cima da lista lida no PC (a página do Assistir
+// mais tarde pode demorar a mostrar o vídeo novo, ou só trazer os primeiros ~100)
+const wlEdits = new Map(); // videoId → { on, v, at }
+function withWlEdits(items) {
+  const now = Date.now();
+  let out = items.slice();
+  for (const [id, e] of wlEdits) {
+    if (now - e.at > 60000) { wlEdits.delete(id); continue; }
+    if (e.on && e.v && !out.some((x) => x.videoId === id)) out.unshift(e.v);
+    if (!e.on) out = out.filter((x) => x.videoId !== id);
+  }
+  return out;
+}
+
 function onWlChanged(m) {
-  const s = home?.sections.find((x) => x.key === "wl");
-  if (!s || m.on) return;
-  s.items = s.items.filter((v) => v.videoId !== m.videoId);
-  const row = document.querySelector(`.rail[data-key="wl"] .item[data-id="${CSS.escape(m.videoId)}"]`);
-  if (!row) return;
-  row.classList.add("leaving");
-  row.addEventListener("animationend", () => row.remove(), { once: true });
-  setTimeout(() => row.remove(), 600);
+  if (!home) return;
+  wlEdits.set(m.videoId, { on: !!m.on, v: knownVideo(m.videoId), at: Date.now() });
+  const s = home.sections.find((x) => x.key === "wl");
+  if (m.on) {
+    const v = knownVideo(m.videoId);
+    if (v && (!s || !s.items.some((x) => x.videoId === v.videoId))) setWlItems([v, ...(s?.items || [])]);
+    return;
+  }
+  if (s) setWlItems(s.items.filter((v) => v.videoId !== m.videoId));
+}
+
+// Troca os vídeos da faixa Assistir mais tarde sem piscar; sem vídeos ela some, e volta no lugar
+// dela (wlSlot: posição na ordem da Home do PC) quando ganha um
+function setWlItems(items) {
+  if (!home) return;
+  let s = home.sections.find((x) => x.key === "wl");
+  if (!s) {
+    if (!items.length || !(home.wlSlot >= 0)) return;
+    s = { key: "wl", title: "Assistir mais tarde", rows: home.wlRows || 1, items: [] };
+    home.sections.splice(Math.min(home.wlSlot, home.sections.length), 0, s);
+  }
+  s.items = items;
+  if (tab !== "home") return;
+  let sec = document.querySelector('.shelf[data-key="wl"]');
+  if (!items.length) {
+    home.sections = home.sections.filter((x) => x !== s);
+    if (sec) { sec.classList.add("leaving"); setTimeout(() => sec.remove(), 450); }
+    return;
+  }
+  if (!sec) {
+    sec = shelfEl(s);
+    sec.classList.add("fresh");
+    const next = home.sections[home.sections.indexOf(s) + 1];
+    const before = next ? document.querySelector(`.shelf[data-key="${next.key}"]`) : $("list").querySelector(":scope > .shelf-h");
+    $("list").insertBefore(sec, before || $("list").firstChild);
+    return;
+  }
+  const rail = sec.querySelector(".rail");
+  rail.style.setProperty("--rows", Math.min(s.rows, Math.max(1, items.length)));
+  syncRows(rail, items, shelfItemEl("wl"));
+  sec.querySelector(".n").textContent = String(items.length);
 }
 
 function showTab(name, reload) {
