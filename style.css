@@ -58,6 +58,7 @@ button { font: inherit; color: inherit; }
   transition: opacity 0.3s ease;
 }
 @starting-style { .ver { opacity: 0; } }
+.ver { cursor: pointer; }
 
 .conn {
   display: inline-flex;
@@ -360,7 +361,8 @@ input[type="range"]::-moz-range-thumb { width: 16px; height: 16px; border: 0; bo
 .pair-qr { width: 132px; height: 132px; flex: none; border-radius: 8px; background: #fff; image-rendering: pixelated; }
 
 /* Botão de ler o QR do PC (sem conexão) e o leitor */
-.qr-row > div { display: flex; justify-content: center; }
+.qr-row > div { display: flex; justify-content: center; gap: 10px; flex-wrap: wrap; }
+.qr-btn-quiet { border-color: var(--line); background: var(--surface); font-weight: 500; }
 .qr-btn {
   margin: 0 0 12px;
   padding: 10px 18px;

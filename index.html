@@ -27,14 +27,14 @@
       <h2>Parear com o PC</h2>
       <p>Para conectar sem internet: no PC, abra o pop-up da extensão &gt; Player &gt; Controle remoto &gt; <b>Parear pela webcam ou código</b> e mostre este QR para a webcam. Sem webcam, mande um print desta tela para o PC ou digite o código.</p>
       <p class="pair-code" id="pairCode"></p>
-      <button type="button" class="pair-hide" id="btnPairHide">Já pareei</button>
+      <button type="button" class="pair-hide" id="btnPairHide">Esconder</button>
     </div>
     <canvas class="pair-qr" id="pairQr" width="200" height="200" aria-label="QR code de pareamento"></canvas>
   </section>
 
   <!-- Sem conexão: ler o QR de conexão do PC -->
   <div class="notice qr-row" id="qrRow" hidden>
-    <div><button type="button" class="qr-btn" id="btnScanPc">Ler QR do PC</button></div>
+    <div><button type="button" class="qr-btn" id="btnScanPc">Ler QR do PC</button><button type="button" class="qr-btn qr-btn-quiet" id="btnShowPair">QR de pareamento</button></div>
   </div>
 
   <!-- Diagnóstico da reconexão (fase de teste): como e por onde o celular voltou -->

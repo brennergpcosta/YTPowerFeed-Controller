@@ -331,7 +331,7 @@ function drawQr(canvas, text) {
   const qr = qrcode(0, "M");
   qr.addData(text);
   qr.make();
-  const n = qr.getModuleCount(), margin = 3, cell = Math.max(2, Math.floor(canvas.width / (n + margin * 2)));
+  const n = qr.getModuleCount(), margin = 3, cell = Math.max(2, Math.floor(200 / (n + margin * 2)));
   const size = cell * (n + margin * 2);
   canvas.width = canvas.height = size;
   const ctx = canvas.getContext("2d");
@@ -1643,7 +1643,11 @@ async function main() {
     $("scanMsg").textContent = "Aponte para o QR de conexão no PC";
   });
   $("scanSheet").addEventListener("close", stopScan);
-  $("btnPairHide").addEventListener("click", () => setKnown(true));
+  $("btnPairHide").addEventListener("click", () => { $("pairCard").hidden = true; });
+  // Mostrar o QR de pareamento a qualquer hora (pelo botão sem conexão, ou tocando na versão)
+  const showPair = () => { renderPairCard(); $("pairCard").hidden = false; window.scrollTo({ top: 0, behavior: "smooth" }); };
+  $("btnShowPair").addEventListener("click", showPair);
+  $("pcVer").addEventListener("click", () => { if ($("pairCard").hidden) showPair(); else $("pairCard").hidden = true; });
   window.connectByInvite = connectByInvite; // testes
   ctx = await keys(secret);
   connect();
