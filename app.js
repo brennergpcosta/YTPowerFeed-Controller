@@ -187,6 +187,7 @@ const PING_MS = 1500;
 let lastMsgAt = 0;
 let pingTimer = 0;
 let hiddenAt = 0;
+let awayMs = 0;       // quanto tempo a página ficou escondida da última vez (para o diagnóstico)
 let lastTick = Date.now();
 
 function dropConnection() {
@@ -215,7 +216,9 @@ function reconnectNow() {
   fails = 0;
   // A rede deu problema: a escuta do ntfy pode ter morrido junto (abre de novo, junto com o ICE)
   esAlive = 0;
-  connect();
+  // Primeiro a vaga de reconexão (local, sem ntfy); sem ela, ou se falhar, o ntfy
+  if (spare) useSpare().then((ok) => { if (!ok) connect(); });
+  else connect();
 }
 
 function check(force) {
@@ -223,7 +226,8 @@ function check(force) {
   if (attempt) abandonAttempt();
   // Desconectado: só uma volta do usuário procura o PC na hora; o resto fica com o scheduleRetry,
   // que espera cada vez mais (cada tentativa gasta mensagens do ntfy, que tem limite por dia)
-  if (dc?.readyState !== "open") { if (force) { fails = 0; connect(); } return; }
+  if (spareBusy) return;
+  if (dc?.readyState !== "open") { if (force) { fails = 0; if (spare) reconnectNow(); else connect(); } return; }
   // O próprio WebRTC já viu que caiu: nem precisa do ping
   if (pc && ["failed", "closed"].includes(pc.connectionState)) { reconnectNow(); return; }
   if (pingTimer || (!force && Date.now() - lastMsgAt < 3000)) return;
@@ -240,13 +244,148 @@ function check(force) {
 // andamento não valem mais; a escuta é aberta de novo já, junto com o ping
 function wake(e) {
   if (document.hidden) { hiddenAt = hiddenAt || Date.now(); return; }
-  const slept = (hiddenAt && Date.now() - hiddenAt > 2000) || ["online", "resume", "frozen-gap"].includes(e?.type);
+  const away = hiddenAt ? Date.now() - hiddenAt : 0;
+  const slept = away > 2000 || ["online", "resume", "frozen-gap"].includes(e?.type);
   hiddenAt = 0;
+  if (away > 2000) awayMs = away;
   if (slept && ctx) {
     abandonAttempt();
     if (!relayFresh() || esAlive) listenRelay();
   }
+  // Mais de 25 s trancado: o PC já desistiu da conexão (30 s sem resposta); sem esperar o ping
+  if (spare && !spareBusy && (away > 25000 || e?.type === "frozen-gap")) { reconnectNow(); return; }
   check(true);
+}
+
+// Canal com o PC (pelo ntfy ou pela vaga): a mesma ligação dos eventos
+function wireChannel(peer, chan, onOpened) {
+  pc = peer;
+  dc = chan;
+  let done = false; // o "open" pode vir depois de o canal já chegar aberto: uma vez só
+  const opened = () => {
+    if (dc !== chan || done) return;
+    done = true;
+    fails = 0;
+    lastMsgAt = Date.now();
+    setConn("on", "Conectado");
+    setUpdated(false);
+    send({ c: "hello", name: deviceName() });
+    showTab(tab, true);
+    onOpened?.();
+  };
+  chan.onopen = opened;
+  chan.onclose = () => { if (dc !== chan) return; dc = null; setConn("off", "Desconectado"); scheduleRetry(true); };
+  chan.onmessage = (e) => { lastMsgAt = Date.now(); try { onMessage(JSON.parse(e.data)); } catch (err) {} };
+  peer.onconnectionstatechange = () => {
+    if (pc !== peer) return;
+    if (peer.connectionState === "failed") { dropConnection(); setConn("off", "A conexão caiu"); scheduleRetry(true); }
+    else if (peer.connectionState === "disconnected") check(true);
+  };
+  if (chan.readyState === "open") opened();
+}
+
+// ---------------------------------------------------------------------------------------------
+// Vaga de reconexão: com a conexão viva, o PC manda pelo canal os dados de uma conexão nova, e o
+// celular monta o lado dele e responde (sem os endereços dele). As duas pontas ficam paradas até a
+// conexão cair: aí o celular entrega à vaga os endereços do PC e ela conecta, sem passar pelo ntfy.
+// Só endereços da rede local (sem STUN)
+// ---------------------------------------------------------------------------------------------
+let spare = null;     // { id, pc, cands, chan }
+let spareBusy = false;
+
+function closeSpare() {
+  const s = spare;
+  spare = null;
+  try { s?.pc.close(); } catch (err) {}
+}
+
+async function onSpare(m) {
+  if (typeof m.id !== "string" || typeof m.sdp !== "string" || !Array.isArray(m.cands)) return;
+  closeSpare();
+  const peer = new RTCPeerConnection({ iceServers: [] });
+  const s = { id: m.id, pc: peer, cands: m.cands.filter((c) => typeof c === "string").slice(0, 20) };
+  s.chan = new Promise((resolve) => { peer.ondatachannel = (e) => resolve(e.channel); });
+  spare = s;
+  await peer.setRemoteDescription({ type: "offer", sdp: m.sdp });
+  await peer.setLocalDescription(await peer.createAnswer());
+  if (spare !== s) return;
+  const bare = peer.localDescription.sdp.split("\r\n").filter((l) => !l.startsWith("a=candidate:") && !l.startsWith("a=end-of-candidates")).join("\r\n");
+  send({ c: "spareAnswer", id: s.id, sdp: bare });
+}
+
+async function useSpare() {
+  const s = spare;
+  spare = null;
+  if (!s || spareBusy) return false;
+  spareBusy = true;
+  const t0 = performance.now();
+  // Na rede local a vaga conecta em milissegundos: sem resposta em 2 s, ela não vale mais (a aba do
+  // PC foi recarregada, por exemplo)
+  const away = awayMs ? ` depois de ${fmtAway(awayMs)} escondida` : "";
+  try {
+    for (const c of s.cands) await s.pc.addIceCandidate({ candidate: c, sdpMid: "0", sdpMLineIndex: 0 }).catch(() => {});
+    const chan = await Promise.race([s.chan, new Promise((r) => setTimeout(() => r(null), 2000))]);
+    const open = chan && await new Promise((resolve) => {
+      if (chan.readyState === "open") return resolve(true);
+      chan.addEventListener("open", () => resolve(true), { once: true });
+      setTimeout(() => resolve(false), 1500);
+    });
+    if (!open) {
+      diag(`A vaga falhou${away} (ICE: ${s.pc.iceConnectionState}); procurando pelo ntfy`, null);
+      try { s.pc.close(); } catch (err) {}
+      return false;
+    }
+    wireChannel(s.pc, chan, null);
+    diag(`Voltou pela vaga em ${Math.round(performance.now() - t0)} ms${away}`, s.pc);
+    return true;
+  } finally {
+    spareBusy = false;
+    awayMs = 0;
+  }
+}
+
+const fmtAway = (ms) => ms < 60000 ? `${Math.round(ms / 1000)} s` : `${Math.round(ms / 60000)} min`;
+
+// Diagnóstico (fase de teste): como voltou e por qual caminho, os últimos eventos guardados
+async function routeOf(peer) {
+  if (!peer) return "";
+  try {
+    const st = await peer.getStats();
+    let pairId = "";
+    st.forEach((r) => { if (r.type === "transport" && r.selectedCandidatePairId) pairId = r.selectedCandidatePairId; });
+    let pair = null;
+    st.forEach((r) => { if (r.type === "candidate-pair" && (r.id === pairId || (!pairId && r.nominated && r.state === "succeeded"))) pair = r; });
+    if (!pair) return "";
+    const l = st.get(pair.localCandidateId), rm = st.get(pair.remoteCandidateId);
+    const local = (c) => c && (c.candidateType === "host" || (c.candidateType === "prflx" && /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|fe80|fd|fc)/i.test(c.address || "")));
+    const how = local(l) && local(rm) ? "direto na rede local" : "pelo roteador";
+    return `${how} (${l?.candidateType || "?"} → ${rm?.candidateType || "?"})`;
+  } catch (err) {
+    return "";
+  }
+}
+
+let diagLog = [];
+try { diagLog = JSON.parse(localStorage.getItem("ytpf-remote-diag") || "[]"); } catch (err) {}
+async function diag(text, peer) {
+  // O caminho só aparece depois que a conexão escolhe o par de endereços
+  if (peer) await new Promise((r) => setTimeout(r, 400));
+  const route = await routeOf(peer);
+  const at = new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+  diagLog = [`${at} · ${text}${route ? ` · ${route}` : ""}`, ...diagLog].slice(0, 6);
+  try { localStorage.setItem("ytpf-remote-diag", JSON.stringify(diagLog)); } catch (err) {}
+  renderDiag();
+}
+function renderDiag() {
+  const box = $("diag");
+  if (!box) return;
+  box.replaceChildren(...diagLog.map((line, i) => {
+    const li = document.createElement("li");
+    li.textContent = line;
+    if (i === 0) li.className = "last";
+    return li;
+  }));
+  box.hidden = !diagLog.length;
 }
 
 async function connect() {
@@ -266,24 +405,8 @@ async function connect() {
     try { pc?.close(); } catch (err) {}
     const peer = new RTCPeerConnection({ iceServers: ICE });
     const chan = peer.createDataChannel("ytpf");
-    pc = peer;
-    dc = chan;
-    chan.onopen = () => {
-      if (dc !== chan) return;
-      fails = 0;
-      lastMsgAt = Date.now();
-      setConn("on", "Conectado");
-      setUpdated(false);
-      send({ c: "hello", name: deviceName() });
-      showTab(tab, true);
-    };
-    chan.onclose = () => { if (dc !== chan) return; dc = null; setConn("off", "Desconectado"); scheduleRetry(true); };
-    chan.onmessage = (e) => { lastMsgAt = Date.now(); try { onMessage(JSON.parse(e.data)); } catch (err) {} };
-    peer.onconnectionstatechange = () => {
-      if (pc !== peer) return;
-      if (peer.connectionState === "failed") { dropConnection(); setConn("off", "A conexão caiu"); scheduleRetry(true); }
-      else if (peer.connectionState === "disconnected") check(true);
-    };
+    const t0 = performance.now();
+    wireChannel(peer, chan, () => diag(`Conectou pelo ntfy em ${Math.round(performance.now() - t0)} ms`, peer));
     await peer.setLocalDescription(await peer.createOffer());
     await Promise.all([iceDone(peer), ready]);
     if (stale()) return;
@@ -408,6 +531,8 @@ function onMessage(m) {
     renderChapters(m.videoId === st.videoId ? m.items || [] : []);
   } else if (m.t === "captions") {
     renderCaptions(m.items || [], m.cur || "");
+  } else if (m.t === "spare") {
+    onSpare(m).catch((err) => diag(`Vaga não preparada: ${err?.message || err}`));
   } else if (m.t === "toast") {
     toast(m.text);
   } else if (m.t === "updated") {
@@ -1234,6 +1359,7 @@ async function main() {
   buildRates();
   bindUi();
   renderNow();
+  renderDiag();
   markRate(true);
   requestAnimationFrame(frame);
   ctx = await keys(secret);
