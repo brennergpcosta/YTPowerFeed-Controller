@@ -80,10 +80,8 @@
 
     <!-- Listas -->
     <nav class="tabs" id="tabs">
-      <button data-tab="queue">Fila</button>
-      <button data-tab="subs">Inscrições</button>
-      <button data-tab="wl">Assistir mais tarde</button>
       <button data-tab="home">Início</button>
+      <button data-tab="queue">Fila</button>
       <button data-tab="search">Buscar</button>
     </nav>
     <form class="search" id="searchForm" hidden>
@@ -98,6 +96,15 @@
     <h2>Onde tocar no PC</h2>
     <p class="sheet-hint">Travado numa aba, tudo que você mandar toca nela, esteja onde estiver o foco no PC.</p>
     <div class="tab-list" id="tabList"></div>
+  </dialog>
+
+  <dialog class="sheet" id="vidSheet" aria-label="Opções do vídeo">
+    <div class="sheet-grip" aria-hidden="true"></div>
+    <div class="vid-head">
+      <img id="vidThumb" alt="">
+      <div><div class="vid-title" id="vidTitle"></div><div class="vid-channel" id="vidChannel"></div></div>
+    </div>
+    <div class="menu-list" id="vidOpts"></div>
   </dialog>
 
   <div class="toast" id="toast" role="status"></div>

@@ -220,7 +220,15 @@ function onMessage(m) {
     if (m.queue) { queue = m.queue; if (tab === "queue") renderQueue(); }
     renderNow();
   } else if (m.t === "list") {
-    if (m.which === tab && (tab !== "search" || m.q === lastQuery)) renderList(m.items, m.error, !!m.auto);
+    if (m.auto && m.which === "subs") onSubsAuto(m.items || []);
+    else if (m.which === tab && (tab !== "search" || m.q === lastQuery)) renderList(m.items, m.error, !!m.auto);
+  } else if (m.t === "home") {
+    home = { sections: m.sections || [], chips: m.chips || [], chip: m.chip || 0, def: m.def ?? -1, items: m.items || [], cont: m.cont || "", error: m.error || "" };
+    if (tab === "home") renderHome();
+  } else if (m.t === "recs") {
+    onRecs(m);
+  } else if (m.t === "wlChanged") {
+    onWlChanged(m);
   } else if (m.t === "tabs") {
     renderTabs(m.items || [], m.pin || 0);
   } else if (m.t === "toast") {
@@ -306,12 +314,50 @@ function frame() {
 // ---------------------------------------------------------------------------------------------
 // Listas
 // ---------------------------------------------------------------------------------------------
-let tab = "subs";
+// Abas: Início (como a Home do PC: faixas Assistir mais tarde e Inscrições em carrossel, na ordem e
+// com as linhas escolhidas lá, e os Recomendados com os filtros), Fila e Buscar.
+// Toque toca no PC; segurar abre o menu do vídeo (fila, Assistir mais tarde, compartilhar).
+let tab = "home";
 let lastQuery = "";
-const ICON_QUEUE = '<svg viewBox="0 0 24 24"><path d="M3 6h12v2H3zm0 4h12v2H3zm0 4h8v2H3zm14 0v-4h2v4h4v2h-4v4h-2v-4h-4v-2z"/></svg>';
-const ICON_REMOVE = '<svg viewBox="0 0 24 24"><path d="m6.4 5 5.6 5.6L17.6 5 19 6.4 13.4 12l5.6 5.6-1.4 1.4-5.6-5.6L6.4 19 5 17.6l5.6-5.6L5 6.4z"/></svg>';
+let home = null;        // { sections, chips, chip, def, items, cont }
+let recsLoading = false;
+let recsObserver = null;
 
-function itemEl(v, i, { current, action, onTap, onAct }) {
+const svgIcon = (d) => `<svg viewBox="0 0 24 24"><path d="${d}"/></svg>`;
+const ICONS = {
+  play: "M8 5v14l11-7z",
+  queue: "M3 6h12v2H3zm0 4h12v2H3zm0 4h8v2H3zm14 0v-4h2v4h4v2h-4v4h-2v-4h-4v-2z",
+  wl: "M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm0 18a8 8 0 1 1 0-16 8 8 0 0 1 0 16zm.5-13H11v6l5.2 3.2.8-1.3-4.5-2.7V7z",
+  wlOff: "M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm0 18a8 8 0 1 1 0-16 8 8 0 0 1 0 16zm-1.2-5.6L7.6 11.2 6.2 12.6l4.6 4.6 7-7-1.4-1.4z",
+  remove: "m6.4 5 5.6 5.6L17.6 5 19 6.4 13.4 12l5.6 5.6-1.4 1.4-5.6-5.6L6.4 19 5 17.6l5.6-5.6L5 6.4z",
+  share: "M18 16.1c-.8 0-1.4.3-2 .8l-7.1-4.2c.1-.2.1-.5.1-.7s0-.5-.1-.7L16 7.2c.5.5 1.2.8 2 .8a3 3 0 1 0-3-3c0 .2 0 .5.1.7L8 9.8A3 3 0 1 0 8 14.2l7.1 4.2c-.1.2-.1.4-.1.6a2.9 2.9 0 1 0 3-2.9z",
+  yt: "M10 15l5.2-3L10 9v6zm11.6-7.8c.4 1.4.4 4.8.4 4.8s0 3.4-.4 4.8a2.5 2.5 0 0 1-1.8 1.8C18.4 19 12 19 12 19s-6.4 0-7.8-.4a2.5 2.5 0 0 1-1.8-1.8C2 15.4 2 12 2 12s0-3.4.4-4.8a2.5 2.5 0 0 1 1.8-1.8C5.6 5 12 5 12 5s6.4 0 7.8.4a2.5 2.5 0 0 1 1.8 1.8z"
+};
+
+// Segurar ~0,45 s abre o menu; o card afunda enquanto segura (e volta se soltar antes)
+function holdable(row, onHold) {
+  let timer = 0, sx = 0, sy = 0, held = false;
+  const cancel = () => { clearTimeout(timer); row.classList.remove("press"); };
+  row.addEventListener("pointerdown", (e) => {
+    held = false;
+    sx = e.clientX; sy = e.clientY;
+    row.classList.add("press");
+    timer = setTimeout(() => {
+      held = true;
+      row.classList.remove("press");
+      if (navigator.vibrate) navigator.vibrate(15);
+      onHold();
+    }, 450);
+  });
+  row.addEventListener("pointermove", (e) => { if (Math.abs(e.clientX - sx) > 10 || Math.abs(e.clientY - sy) > 10) cancel(); });
+  for (const t of ["pointerup", "pointercancel", "pointerleave"]) row.addEventListener(t, cancel);
+  row.addEventListener("contextmenu", (e) => e.preventDefault());
+  row.addEventListener("click", (e) => {
+    if (held) { e.preventDefault(); e.stopImmediatePropagation(); held = false; }
+  }, true);
+}
+
+function itemEl(v, i, { current, onTap, menu }) {
   const row = document.createElement("div");
   row.className = "item" + (current ? " current" : "");
   row.dataset.id = v.videoId;
@@ -321,6 +367,7 @@ function itemEl(v, i, { current, action, onTap, onAct }) {
   const img = document.createElement("img");
   img.loading = "lazy";
   img.alt = "";
+  img.draggable = false;
   img.src = thumbUrl(v.videoId);
   pic.append(img);
   if (v.duration || v.isLive) {
@@ -330,6 +377,7 @@ function itemEl(v, i, { current, action, onTap, onAct }) {
     pic.append(d);
   }
   const txt = document.createElement("div");
+  txt.className = "txt";
   const t = document.createElement("div");
   t.className = "t";
   t.textContent = v.title || v.videoId;
@@ -337,13 +385,9 @@ function itemEl(v, i, { current, action, onTap, onAct }) {
   c.className = "c";
   c.textContent = [v.channel, v.info].filter(Boolean).join(" · ");
   txt.append(t, c);
-  const act = document.createElement("button");
-  act.className = "act";
-  act.setAttribute("aria-label", action === "remove" ? "Tirar da fila" : "Adicionar à fila");
-  act.innerHTML = action === "remove" ? ICON_REMOVE : ICON_QUEUE;
-  act.addEventListener("click", (e) => { e.stopPropagation(); onAct(); });
-  row.append(pic, txt, act);
+  row.append(pic, txt);
   row.addEventListener("click", onTap);
+  if (menu) holdable(row, () => openMenu(v, menu()));
   return row;
 }
 
@@ -354,50 +398,244 @@ function emptyEl(text) {
   return e;
 }
 
-function listItemEl(v, i) {
-  return itemEl(v, i, {
-    current: v.videoId === st.videoId,
-    action: "queue",
-    onTap: () => { send({ c: "open", videoId: v.videoId, title: v.title || "" }); toast("Tocando no PC"); },
-    onAct: () => send({ c: "queue", videoId: v.videoId })
+const playOnPc = (v) => { send({ c: "open", videoId: v.videoId, title: v.title || "" }); toast("Tocando no PC"); };
+
+// Opções do menu de um vídeo comum (Inscrições, Recomendados, Buscar); inWl: está no Assistir mais tarde
+function videoMenu(v, inWl) {
+  return [
+    { icon: ICONS.play, text: "Tocar no PC", run: () => playOnPc(v) },
+    { icon: ICONS.queue, text: "Adicionar à fila", run: () => send({ c: "queue", videoId: v.videoId }) },
+    inWl
+      ? { icon: ICONS.wlOff, text: "Tirar do Assistir mais tarde", run: () => send({ c: "wl", videoId: v.videoId, on: false }) }
+      : { icon: ICONS.wl, text: "Salvar em Assistir mais tarde", run: () => send({ c: "wl", videoId: v.videoId, on: true }) },
+    { icon: ICONS.share, text: "Compartilhar", run: () => shareVideo(v) },
+    { icon: ICONS.yt, text: "Abrir no app do YouTube", run: () => { location.href = `https://youtu.be/${v.videoId}`; } }
+  ];
+}
+
+async function shareVideo(v) {
+  const url = `https://youtu.be/${v.videoId}`;
+  try {
+    if (navigator.share) await navigator.share({ title: v.title || "", url });
+    else { await navigator.clipboard.writeText(url); toast("Link copiado"); }
+  } catch (err) {}
+}
+
+function openMenu(v, opts) {
+  const sheet = $("vidSheet");
+  $("vidThumb").src = thumbUrl(v.videoId);
+  $("vidTitle").textContent = v.title || v.videoId;
+  $("vidChannel").textContent = v.channel || "";
+  $("vidOpts").replaceChildren(...opts.map((o, i) => {
+    const b = document.createElement("button");
+    b.className = "menu-opt";
+    b.style.animationDelay = `${i * 30}ms`;
+    b.innerHTML = svgIcon(o.icon);
+    const s = document.createElement("span");
+    s.textContent = o.text;
+    b.append(s);
+    b.addEventListener("click", () => { sheet.close(); o.run(); });
+    return b;
+  }));
+  sheet.showModal();
+}
+
+const listItemEl = (v, i) => itemEl(v, i, { current: v.videoId === st.videoId, onTap: () => playOnPc(v), menu: () => videoMenu(v, false) });
+
+// Atualiza uma lista sem piscar: os que já estavam ficam (sem repetir a entrada), os que saíram
+// fecham e os novos entram abrindo espaço, com um brilho amarelo
+function syncRows(box, items, make) {
+  const old = new Map([...box.querySelectorAll(".item[data-id]")].map((r) => [r.dataset.id, r]));
+  const keep = new Set(items.map((v) => v.videoId));
+  for (const [id, r] of old) if (!keep.has(id)) r.remove();
+  for (const e of box.querySelectorAll(".empty")) e.remove();
+  let at = box.firstElementChild;
+  items.forEach((v, i) => {
+    let row = old.get(v.videoId);
+    if (!row) {
+      row = make(v, i);
+      row.classList.add("fresh");
+    } else {
+      row.style.animation = "none";
+    }
+    if (row !== at) box.insertBefore(row, at);
+    else at = at.nextElementSibling;
   });
 }
 
-// auto: a lista mudou sozinha no PC (vídeo novo nas Inscrições). Os que já estavam ficam onde
-// estão, sem piscar; os novos entram abrindo espaço, com um brilho amarelo
 function renderList(items, error, auto) {
   const list = $("list");
   if (auto && error) return;
   if (error) return list.replaceChildren(emptyEl(`Não deu para carregar: ${error}`));
   if (!items?.length) return list.replaceChildren(emptyEl(tab === "search" && !lastQuery ? "Digite o que procurar" : "Nada aqui"));
-  const old = new Map([...list.querySelectorAll(".item[data-id]")].map((r) => [r.dataset.id, r]));
-  if (!auto || !old.size) return list.replaceChildren(...items.map(listItemEl));
-  const keep = new Set(items.map((v) => v.videoId));
-  for (const [id, r] of old) if (!keep.has(id)) r.remove();
-  for (const e of list.querySelectorAll(".empty")) e.remove();
-  let at = list.firstElementChild;
-  items.forEach((v, i) => {
-    let row = old.get(v.videoId);
-    if (!row) {
-      row = listItemEl(v, 0);
-      row.classList.add("fresh");
-    } else {
-      row.style.animation = "none"; // mudar de lugar não repete a entrada
-    }
-    if (row !== at) list.insertBefore(row, at);
-    else at = at.nextElementSibling;
-  });
+  if (!auto || !list.querySelector(".item")) return list.replaceChildren(...items.map(listItemEl));
+  syncRows(list, items, listItemEl);
 }
 
 function renderQueue() {
   const list = $("list");
-  if (!queue.items?.length) return list.replaceChildren(emptyEl("A fila do YouTube está vazia. Use o + de um vídeo para pôr nela."));
+  if (!queue.items?.length) return list.replaceChildren(emptyEl("A fila do YouTube está vazia. Segure um vídeo e escolha \"Adicionar à fila\"."));
   list.replaceChildren(...queue.items.map((v, i) => itemEl(v, i, {
     current: i === queue.cur,
-    action: "remove",
     onTap: () => send({ c: "queuePlay", setId: v.setId, videoId: v.videoId }),
-    onAct: () => send({ c: "queueRemove", setId: v.setId })
+    menu: () => [
+      { icon: ICONS.play, text: "Tocar agora", run: () => send({ c: "queuePlay", setId: v.setId, videoId: v.videoId }) },
+      { icon: ICONS.remove, text: "Tirar da fila", run: () => send({ c: "queueRemove", setId: v.setId }) },
+      { icon: ICONS.share, text: "Compartilhar", run: () => shareVideo(v) }
+    ]
   })));
+}
+
+// ---------------------------------------------------------------------------------------------
+// Início
+// ---------------------------------------------------------------------------------------------
+function shelfItemEl(key) {
+  return (v, i) => itemEl(v, i, {
+    current: v.videoId === st.videoId,
+    onTap: () => playOnPc(v),
+    menu: () => videoMenu(v, key === "wl")
+  });
+}
+
+function renderHome() {
+  const list = $("list");
+  if (!home) return list.replaceChildren(emptyEl("Carregando…"));
+  const parts = [];
+  for (const s of home.sections) {
+    const sec = document.createElement("section");
+    sec.className = "shelf";
+    const h = document.createElement("h3");
+    h.className = "shelf-h";
+    h.textContent = s.title;
+    const n = document.createElement("span");
+    n.className = "n";
+    n.textContent = s.items.length ? String(s.items.length) : "";
+    h.append(n);
+    const rail = document.createElement("div");
+    rail.className = "rail";
+    rail.dataset.key = s.key;
+    rail.style.setProperty("--rows", Math.min(s.rows, Math.max(1, s.items.length)));
+    const make = shelfItemEl(s.key);
+    if (s.items.length) rail.append(...s.items.map(make));
+    else rail.append(emptyEl("Nada aqui"));
+    sec.append(h, rail);
+    parts.push(sec);
+  }
+  const rh = document.createElement("h3");
+  rh.className = "shelf-h";
+  rh.textContent = "Recomendados";
+  parts.push(rh);
+  if (home.chips.length) {
+    const chips = document.createElement("div");
+    chips.className = "chips";
+    chips.id = "chips";
+    home.chips.forEach((text, i) => {
+      const b = document.createElement("button");
+      b.className = i === home.chip ? "on" : "";
+      b.textContent = text;
+      if (i === home.def && home.def !== 0) {
+        const d = document.createElement("span");
+        d.className = "def";
+        d.textContent = "· Padrão";
+        b.append(d);
+      }
+      b.addEventListener("click", () => pickChip(i));
+      chips.append(b);
+    });
+    parts.push(chips);
+  }
+  const recs = document.createElement("div");
+  recs.className = "list recs";
+  recs.id = "recs";
+  if (home.error && !home.items.length) recs.append(emptyEl(`Não deu para carregar: ${home.error}`));
+  else if (home.items.length) recs.append(...home.items.map(listItemEl));
+  else recs.append(emptyEl("Nada aqui"));
+  const more = document.createElement("div");
+  more.className = "more";
+  more.id = "recsMore";
+  parts.push(recs, more);
+  list.replaceChildren(...parts);
+  centerChip(false);
+  watchMore();
+}
+
+// O filtro escolhido fica no meio do carrossel de filtros
+function centerChip(smooth) {
+  const bar = $("chips");
+  const on = bar?.querySelector(".on");
+  if (!on) return;
+  const left = on.offsetLeft - (bar.clientWidth - on.offsetWidth) / 2;
+  bar.scrollTo({ left: Math.max(0, left), behavior: smooth ? "smooth" : "instant" });
+}
+
+function pickChip(i) {
+  if (!home || recsLoading) return;
+  home.chip = i;
+  for (const [j, b] of [...$("chips").children].entries()) b.classList.toggle("on", j === i);
+  centerChip(true);
+  recsLoading = true;
+  $("recs").classList.add("loading");
+  send({ c: "recs", chip: i });
+}
+
+function watchMore() {
+  recsObserver?.disconnect();
+  const more = $("recsMore");
+  if (!more) return;
+  recsObserver = new IntersectionObserver((es) => {
+    if (!es.some((e) => e.isIntersecting) || !home?.cont || recsLoading || tab !== "home") return;
+    recsLoading = true;
+    more.classList.add("on");
+    send({ c: "recs", chip: home.chip, cont: home.cont });
+  }, { rootMargin: "600px 0px" });
+  recsObserver.observe(more);
+}
+
+function onRecs(m) {
+  recsLoading = false;
+  if (!home || tab !== "home") return;
+  $("recsMore")?.classList.remove("on");
+  const recs = $("recs");
+  if (!recs) return;
+  if (m.append) {
+    const shown = new Set(home.items.map((v) => v.videoId));
+    const fresh = (m.items || []).filter((v) => !shown.has(v.videoId));
+    home.items = home.items.concat(fresh);
+    home.cont = m.cont || "";
+    recs.append(...fresh.map(listItemEl));
+    return;
+  }
+  if (m.chip !== home.chip) return;
+  recs.classList.remove("loading");
+  if (m.error) { toast("Não deu para carregar esse filtro"); return; }
+  home.items = m.items || [];
+  home.cont = m.cont || "";
+  recs.replaceChildren(...(home.items.length ? home.items.map(listItemEl) : [emptyEl("Nada aqui")]));
+}
+
+// Inscrições mudaram no PC: o carrossel delas no Início se atualiza sozinho
+function onSubsAuto(items) {
+  const s = home?.sections.find((x) => x.key === "subs");
+  if (!s) return;
+  s.items = items;
+  const rail = document.querySelector('.rail[data-key="subs"]');
+  if (!rail || tab !== "home") return;
+  rail.style.setProperty("--rows", Math.min(s.rows, Math.max(1, items.length)));
+  syncRows(rail, items, shelfItemEl("subs"));
+  const n = rail.parentElement.querySelector(".n");
+  if (n) n.textContent = String(items.length);
+}
+
+// Tirado do Assistir mais tarde: sai do carrossel dele fechando o espaço
+function onWlChanged(m) {
+  const s = home?.sections.find((x) => x.key === "wl");
+  if (!s || m.on) return;
+  s.items = s.items.filter((v) => v.videoId !== m.videoId);
+  const row = document.querySelector(`.rail[data-key="wl"] .item[data-id="${CSS.escape(m.videoId)}"]`);
+  if (!row) return;
+  row.classList.add("leaving");
+  row.addEventListener("animationend", () => row.remove(), { once: true });
+  setTimeout(() => row.remove(), 600);
 }
 
 function showTab(name, reload) {
@@ -407,6 +645,15 @@ function showTab(name, reload) {
   for (const b of $("tabs").children) b.classList.toggle("on", b.dataset.tab === name);
   $("searchForm").hidden = name !== "search";
   if (name === "queue") return renderQueue();
+  if (name === "home") {
+    if (reload || !home) {
+      if (!home) $("list").replaceChildren(emptyEl("Carregando…"));
+      recsLoading = false;
+      send({ c: "home" });
+    }
+    if (changed && home) renderHome();
+    return;
+  }
   if (name === "search" && !lastQuery) return renderList([]);
   if (changed || reload) {
     $("list").replaceChildren(emptyEl("Carregando…"));
@@ -546,7 +793,7 @@ function bindUi() {
     send({ c: "tabs" });
   });
   // Toque fora da folha fecha
-  $("tabSheet").addEventListener("click", (e) => { if (e.target === e.currentTarget) e.currentTarget.close(); });
+  for (const id of ["tabSheet", "vidSheet"]) $(id).addEventListener("click", (e) => { if (e.target === e.currentTarget) e.currentTarget.close(); });
   $("btnFs").addEventListener("click", () => {
     st.fs = !st.fs;
     send({ c: "fs", on: st.fs });
@@ -581,8 +828,8 @@ async function main() {
     return;
   }
   $("mainView").hidden = false;
-  try { tab = localStorage.getItem("ytpf-remote-tab") || "subs"; } catch (err) {}
-  if (tab === "search") tab = "subs";
+  try { tab = localStorage.getItem("ytpf-remote-tab") || "home"; } catch (err) {}
+  if (!["home", "queue"].includes(tab)) tab = "home";
   for (const b of $("tabs").children) b.classList.toggle("on", b.dataset.tab === tab);
   buildRates();
   bindUi();
