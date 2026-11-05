@@ -137,9 +137,43 @@ function iceDone(peer) {
   });
 }
 
+// Celular trancado: o sistema congela a página e a conexão morre sem avisar (o canal continua
+// "aberto" por um tempo). Ao voltar, e a cada poucos segundos sem notícia do PC, o celular manda
+// um "ping"; sem resposta em 2 s, a conexão é dada como morta e ele procura o PC de novo, sozinho
+let lastMsgAt = 0;
+let connectingAt = 0;
+let pingTimer = 0;
+
+function dropConnection() {
+  try { dc?.close(); } catch (err) {}
+  try { pc?.close(); } catch (err) {}
+  dc = null;
+  pc = null;
+}
+
+function check(force) {
+  if (!ctx || document.hidden || connecting && Date.now() - connectingAt < 20000) return;
+  if (dc?.readyState !== "open") { fails = 0; connect(); return; }
+  if (pingTimer || (!force && Date.now() - lastMsgAt < 3000)) return;
+  const sentAt = Date.now();
+  try { dc.send(JSON.stringify({ c: "ping" })); } catch (err) {}
+  pingTimer = setTimeout(() => {
+    pingTimer = 0;
+    if (lastMsgAt >= sentAt || document.hidden) return;
+    setConn("wait", "Reconectando…");
+    dropConnection();
+    fails = 0;
+    connect();
+  }, 2000);
+}
+const wake = () => check(true);
+
 async function connect() {
-  if (connecting || dc?.readyState === "open") return;
+  // Um pedido que ficou parado com a página congelada não segura os próximos
+  if (connecting && Date.now() - connectingAt < 20000) return;
+  if (dc?.readyState === "open") return;
   connecting = true;
+  connectingAt = Date.now();
   clearTimeout(retryTimer);
   setConn("wait", "Procurando o PC…");
   try {
@@ -149,12 +183,14 @@ async function connect() {
     dc = pc.createDataChannel("ytpf");
     dc.onopen = () => {
       fails = 0;
+      lastMsgAt = Date.now();
       setConn("on", "Conectado");
       send({ c: "hello", name: deviceName() });
       showTab(tab, true);
     };
-    dc.onclose = () => { setConn("off", "Desconectado"); scheduleRetry(); };
-    dc.onmessage = (e) => { try { onMessage(JSON.parse(e.data)); } catch (err) {} };
+    const mine = dc;
+    dc.onclose = () => { if (dc !== mine && dc) return; setConn("off", "Desconectado"); scheduleRetry(); };
+    dc.onmessage = (e) => { lastMsgAt = Date.now(); try { onMessage(JSON.parse(e.data)); } catch (err) {} };
     pc.onconnectionstatechange = () => {
       if (pc.connectionState === "failed") { setConn("off", "A conexão caiu"); scheduleRetry(); }
     };
@@ -169,7 +205,7 @@ async function connect() {
     waiting = null;
     await pc.setRemoteDescription({ type: "answer", sdp: msg.sdp });
     // Conectando: o onopen do canal confirma
-    setTimeout(() => { if (dc?.readyState !== "open") scheduleRetry(); }, 10000);
+    setTimeout(() => { if (dc === mine && dc.readyState !== "open") scheduleRetry(); }, 10000);
   } catch (err) {
     waiting = null;
     fails++;
@@ -187,13 +223,17 @@ function scheduleRetry() {
 }
 
 function send(obj) {
-  if (dc?.readyState === "open") dc.send(JSON.stringify(obj));
-  else connect();
+  if (dc?.readyState === "open") { dc.send(JSON.stringify(obj)); check(false); }
+  else wake();
 }
 
-document.addEventListener("visibilitychange", () => {
-  if (!document.hidden && ctx && dc?.readyState !== "open") connect();
-});
+// Ao destravar o celular ou voltar para a página: confere a conexão e, morta, procura o PC
+document.addEventListener("visibilitychange", wake);
+window.addEventListener("pageshow", wake);
+window.addEventListener("online", wake);
+window.addEventListener("focus", wake);
+// Com a página à vista: conexão parada (sem notícia do PC) volta sozinha
+setInterval(() => check(false), 3000);
 
 // ---------------------------------------------------------------------------------------------
 // Tocando agora
