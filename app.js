@@ -364,18 +364,16 @@ function stopScan() {
 async function scanPcQr() {
   if (!("BarcodeDetector" in window)) { toast("Este navegador não lê QR code"); return; }
   const detector = new BarcodeDetector({ formats: ["qr_code"] });
-  try {
-    scanStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
-  } catch (err) {
+  $("scanMsg").textContent = "Abrindo a câmera…";
+  $("scanSheet").showModal();
+  if (!await openCamera(0)) {
+    stopScan();
     toast("Sem acesso à câmera");
     return;
   }
-  const video = $("scanVideo");
-  video.srcObject = scanStream;
   $("scanMsg").textContent = "Aponte para o QR de conexão no PC";
-  $("scanSheet").showModal();
-  await video.play().catch(() => {});
   scanOn = true;
+  const video = $("scanVideo");
   const tick = async () => {
     if (!scanOn) return;
     let text = "";
@@ -391,6 +389,80 @@ async function scanPcQr() {
     setTimeout(tick, 200);
   };
   tick();
+}
+
+// Câmera do leitor: o "traseira" que o Chrome escolhe sozinho pode ser a ultra-wide, que não foca
+// de perto (Galaxy S23). Com a permissão dada, lista as traseiras, a principal primeiro (nos
+// Android, "camera2 0"), e fica com a primeira que tem foco automático; a escolhida fica guardada.
+// "Trocar câmera" passa para a próxima
+const CAM = "ytpf-remote-cam";
+let cams = [];
+let camIdx = 0;
+
+const camOrder = (d) => { const m = /camera2?\s*(\d+)/i.exec(d.label); return m ? Number(m[1]) : 50; };
+
+async function listCameras() {
+  const devs = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === "videoinput" && d.deviceId);
+  const back = devs.filter((d) => /back|rear|traseira|environment/i.test(d.label));
+  return (back.length ? back : devs).sort((a, b) => camOrder(a) - camOrder(b));
+}
+
+async function startStream(deviceId) {
+  const video = deviceId
+    ? { deviceId: { exact: deviceId }, width: { ideal: 1920 }, height: { ideal: 1080 } }
+    : { facingMode: "environment", width: { ideal: 1920 }, height: { ideal: 1080 } };
+  const stream = await navigator.mediaDevices.getUserMedia({ video });
+  const track = stream.getVideoTracks()[0];
+  const caps = track.getCapabilities?.() || {};
+  const focus = Array.isArray(caps.focusMode) && caps.focusMode.includes("continuous");
+  if (focus) await track.applyConstraints({ advanced: [{ focusMode: "continuous" }] }).catch(() => {});
+  return { stream, focus };
+}
+
+function useStream(stream) {
+  scanStream?.getTracks().forEach((t) => t.stop());
+  scanStream = stream;
+  const video = $("scanVideo");
+  video.srcObject = stream;
+  video.play().catch(() => {});
+}
+
+async function openCamera(step) {
+  try {
+    if (!cams.length) {
+      // Primeiro uma câmera qualquer: sem permissão, a lista vem sem os nomes
+      const first = await startStream("");
+      cams = await listCameras();
+      let saved = "";
+      try { saved = localStorage.getItem(CAM) || ""; } catch (err) {}
+      const savedIdx = cams.findIndex((d) => d.deviceId === saved);
+      if (savedIdx >= 0 || cams.length < 2) {
+        camIdx = Math.max(0, savedIdx);
+        if (!cams.length) { useStream(first.stream); return true; }
+        first.stream.getTracks().forEach((t) => t.stop());
+        useStream((await startStream(cams[camIdx].deviceId)).stream);
+      } else {
+        first.stream.getTracks().forEach((t) => t.stop());
+        // A primeira traseira com foco automático (na ordem: a principal antes)
+        let pick = null;
+        for (let i = 0; i < cams.length && !pick; i++) {
+          const s = await startStream(cams[i].deviceId).catch(() => null);
+          if (s?.focus) { pick = s; camIdx = i; }
+          else s?.stream.getTracks().forEach((t) => t.stop());
+        }
+        if (!pick) { camIdx = 0; pick = await startStream(cams[0].deviceId); }
+        useStream(pick.stream);
+      }
+    } else {
+      camIdx = (camIdx + step + cams.length) % cams.length;
+      useStream((await startStream(cams[camIdx].deviceId)).stream);
+    }
+    try { if (cams[camIdx]) localStorage.setItem(CAM, cams[camIdx].deviceId); } catch (err) {}
+    $("btnScanSwitch").hidden = cams.length < 2;
+    return true;
+  } catch (err) {
+    return false;
+  }
 }
 
 async function unpackInvite(text) {
@@ -1565,6 +1637,11 @@ async function main() {
   renderPairCard();
   $("btnScanPc").addEventListener("click", scanPcQr);
   $("btnScanClose").addEventListener("click", stopScan);
+  $("btnScanSwitch").addEventListener("click", async () => {
+    $("scanMsg").textContent = "Trocando de câmera…";
+    await openCamera(1);
+    $("scanMsg").textContent = "Aponte para o QR de conexão no PC";
+  });
   $("scanSheet").addEventListener("close", stopScan);
   $("btnPairHide").addEventListener("click", () => setKnown(true));
   window.connectByInvite = connectByInvite; // testes

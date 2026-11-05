@@ -1,6 +1,6 @@
 // Guarda a página para abrir rápido (e sem rede, mostrando "Desconectado"); a rede tem prioridade,
 // então uma versão nova chega na próxima abertura.
-const CACHE = "ytpf-remote-v14";
+const CACHE = "ytpf-remote-v15";
 const FILES = ["./", "index.html", "style.css", "app.js", "vendor/qrcode.js", "manifest.webmanifest", "icons/icon-192.png"];
 
 self.addEventListener("install", (e) => {

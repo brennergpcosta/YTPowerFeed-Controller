@@ -374,7 +374,8 @@ input[type="range"]::-moz-range-thumb { width: 16px; height: 16px; border: 0; bo
 }
 .qr-btn:active { transform: scale(0.96); }
 .scan-video { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: var(--r); background: #000; display: block; }
-.scan-close { display: block; margin: 12px auto 0; }
+.scan-actions { display: flex; justify-content: center; gap: 10px; margin-top: 12px; }
+.scan-actions .qr-btn { margin: 0; }
 
 /* Diagnóstico da reconexão (fase de teste) */
 .diag {

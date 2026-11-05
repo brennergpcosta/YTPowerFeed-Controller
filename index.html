@@ -160,7 +160,10 @@
     <h2>Ler QR do PC</h2>
     <p class="sheet-hint" id="scanMsg">Aponte para o QR de conexão no PC</p>
     <video class="scan-video" id="scanVideo" muted playsinline></video>
-    <button type="button" class="qr-btn scan-close" id="btnScanClose">Cancelar</button>
+    <div class="scan-actions">
+      <button type="button" class="qr-btn" id="btnScanSwitch" hidden>Trocar câmera</button>
+      <button type="button" class="qr-btn" id="btnScanClose">Cancelar</button>
+    </div>
   </dialog>
 
   <dialog class="sheet" id="ccSheet" aria-label="Legendas">
