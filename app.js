@@ -5,7 +5,7 @@
  * sai da própria chave (SHA-256). A chave vem no "#k=" do link e fica guardada neste aparelho.
  */
 
-import { qrcode } from "./vendor/qrcode.js";
+import { Mqtt } from "./mqtt.js";
 
 const RELAY = "https://ntfy.sh";
 const ICE = [{ urls: "stun:stun.l.google.com:19302" }, { urls: "stun:stun1.l.google.com:19302" }];
@@ -66,26 +66,51 @@ async function publish(ctx, obj) {
   const id = Math.random().toString(36).slice(2, 10);
   const n = Math.ceil(data.length / CHUNK);
   for (let p = 0; p < n; p++) {
-    const r = await fetch(`${RELAY}/${ctx.topic}?cache=no`, {
-      method: "POST",
-      body: JSON.stringify({ f: me, i: id, p, n, d: data.slice(p * CHUNK, (p + 1) * CHUNK) })
-    });
+    const body = JSON.stringify({ f: me, i: id, p, n, d: data.slice(p * CHUNK, (p + 1) * CHUNK) });
+    // Pelo MQTT público e pelo ntfy ao mesmo tempo: vale o que chegar primeiro
+    const viaMqtt = !!mqtt?.publish(body);
+    if (Date.now() < quotaUntil) {
+      if (!viaMqtt) throw Object.assign(new Error("limite do ntfy"), { quota: true });
+      continue;
+    }
+    const r = await fetch(`${RELAY}/${ctx.topic}?cache=no`, { method: "POST", body }).catch(() => null);
     // O ntfy.sh grátis aceita 250 mensagens por dia por endereço de internet (o PC e o celular no
     // mesmo Wi-Fi contam juntos); passou disso, responde 429 até o dia virar
-    if (r.status === 429) throw Object.assign(new Error("limite do ntfy"), { quota: true });
-    if (!r.ok) throw new Error(`ntfy: HTTP ${r.status}`);
+    if (r?.status === 429) {
+      readQuota();
+      if (!viaMqtt) throw Object.assign(new Error("limite do ntfy"), { quota: true });
+    } else if (!r?.ok && !viaMqtt) {
+      throw new Error(`ntfy: ${r ? `HTTP ${r.status}` : "sem rede"}`);
+    }
   }
 }
 
 const parts = new Map();
+const doneIds = new Map(); // a mesma mensagem chega pelo ntfy e pelo MQTT: só a primeira conta
 function reassemble(env) {
-  if (env.n === 1) return env.d;
+  if (doneIds.has(env.i)) return null;
+  for (const [k, t] of doneIds) if (Date.now() - t > 120000) doneIds.delete(k);
+  if (env.n === 1) { doneIds.set(env.i, Date.now()); return env.d; }
   const slot = parts.get(env.i) || { got: [], at: Date.now() };
   slot.got[env.p] = env.d;
   parts.set(env.i, slot);
   if (slot.got.filter((x) => x !== undefined).length < env.n) return null;
   parts.delete(env.i);
+  doneIds.set(env.i, Date.now());
   return slot.got.join("");
+}
+
+// Mensagem do PC, pelo ntfy ou pelo MQTT
+let mqtt = null;
+async function onEnvelope(raw) {
+  try {
+    const env = JSON.parse(raw);
+    if (!env || env.f === me || typeof env.d !== "string") return;
+    const text = reassemble(env);
+    if (!text) return;
+    const msg = await unseal(ctx.key, text);
+    if (msg.type === "answer" && msg.to === me && waiting) waiting(msg);
+  } catch (err) {}
 }
 
 const deviceName = () => {
@@ -130,8 +155,6 @@ function setUpdated(on) {
 }
 
 function setConn(state, text) {
-  const qr = $("qrRow");
-  if (qr && identity) qr.hidden = state === "on";
   $("conn").dataset.state = state;
   $("connText").textContent = text;
 }
@@ -147,16 +170,9 @@ function listenRelay() {
   esAt = Date.now();
   const alive = () => { if (es === mine) esAlive = Date.now(); };
   mine.addEventListener("keepalive", alive);
-  mine.onmessage = async (e) => {
+  mine.onmessage = (e) => {
     alive();
-    try {
-      const env = JSON.parse(JSON.parse(e.data).message || "null");
-      if (!env || env.f === me || typeof env.d !== "string") return;
-      const text = reassemble(env);
-      if (!text) return;
-      const msg = await unseal(ctx.key, text);
-      if (msg.type === "answer" && msg.to === me && waiting) waiting(msg);
-    } catch (err) {}
+    try { onEnvelope(JSON.parse(e.data).message || "null"); } catch (err) {}
   };
   esReady = new Promise((resolve) => {
     mine.addEventListener("open", () => { alive(); resolve(); });
@@ -253,299 +269,13 @@ function wake(e) {
   hiddenAt = 0;
   if (away > 2000) awayMs = away;
   if (slept && ctx) {
+    mqtt?.refresh();
     abandonAttempt();
-    if (ntfyOn() && (!relayFresh() || esAlive)) listenRelay();
+    if (!relayFresh() || esAlive) listenRelay();
   }
   // Mais de 25 s trancado: o PC já desistiu da conexão (30 s sem resposta); sem esperar o ping
   if (spare && !spareBusy && (away > 25000 || e?.type === "frozen-gap")) { reconnectNow(); return; }
   check(true);
-}
-
-// ---------------------------------------------------------------------------------------------
-// Conexão sem serviço de fora: identidade fixa deste celular (certificado guardado no IndexedDB) e
-// QR de conexão do PC. O PC guarda a impressão digital do certificado (mandada aqui ao conectar, ou
-// lida pela webcam no QR de pareamento, ou digitada como código) e, com ela, monta sozinho a
-// resposta deste celular; o QR do PC traz os endereços dele e o usuário e a senha de ICE que este
-// celular deve usar. A conta do código é a mesma do popup/remote-id.js da extensão
-// ---------------------------------------------------------------------------------------------
-let identity = null; // { cert, fp ("AB:CD:…"), code (56 caracteres) }
-const KNOWN = "ytpf-remote-known";
-const B32 = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
-
-function idb() {
-  return new Promise((resolve, reject) => {
-    const r = indexedDB.open("ytpf-remote", 1);
-    r.onupgradeneeded = () => r.result.createObjectStore("kv");
-    r.onsuccess = () => resolve(r.result);
-    r.onerror = () => reject(r.error);
-  });
-}
-
-function toBase32(bytes) {
-  let out = "", bits = 0, value = 0;
-  for (const b of bytes) {
-    value = (value << 8) | b;
-    bits += 8;
-    while (bits >= 5) {
-      out += B32[(value >> (bits - 5)) & 31];
-      bits -= 5;
-    }
-  }
-  return out;
-}
-
-async function loadIdentity() {
-  const db = await idb();
-  const get = (k) => new Promise((resolve) => {
-    const q = db.transaction("kv").objectStore("kv").get(k);
-    q.onsuccess = () => resolve(q.result || null);
-    q.onerror = () => resolve(null);
-  });
-  let cert = await get("cert");
-  // Certificado novo um mês antes de vencer (aí o PC aprende o novo na próxima conexão)
-  if (!cert || cert.expires < Date.now() + 30 * 864e5) {
-    const algo = { name: "ECDSA", namedCurve: "P-256" };
-    cert = await RTCPeerConnection.generateCertificate({ ...algo, expires: 360 * 864e5 }).catch(() => RTCPeerConnection.generateCertificate(algo));
-    await new Promise((resolve) => {
-      const t = db.transaction("kv", "readwrite");
-      t.objectStore("kv").put(cert, "cert");
-      t.oncomplete = resolve;
-      t.onerror = resolve;
-    });
-  }
-  const fp = cert.getFingerprints().find((f) => f.algorithm === "sha-256").value.toUpperCase();
-  const bytes = Uint8Array.from(fp.split(":"), (h) => parseInt(h, 16));
-  const sum = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
-  const code = toBase32([...bytes, sum[0], sum[1], sum[2]]);
-  return { cert, fp, code };
-}
-
-// Desfazer o pareamento: o PC esquece este celular (se estiver conectado) e o celular ganha um
-// certificado novo, ou seja, outra identidade e outro QR de pareamento
-async function forgetPairing() {
-  if (!confirm("Desfazer o pareamento deste celular? Para conectar sem internet de novo, será preciso parear outra vez.")) return;
-  if (identity && dc?.readyState === "open") send({ c: "forget", fp: identity.fp });
-  closeSpare();
-  try { localStorage.removeItem(KNOWN); } catch (err) {}
-  try {
-    const db = await idb();
-    await new Promise((resolve) => {
-      const t = db.transaction("kv", "readwrite");
-      t.objectStore("kv").delete("cert");
-      t.oncomplete = resolve;
-      t.onerror = resolve;
-    });
-    identity = await loadIdentity();
-  } catch (err) {}
-  renderPairCard();
-  $("pairCard").hidden = false;
-  toast("Pareamento desfeito: este é o QR novo");
-}
-
-// O PC já conhece este celular: o cartão de pareamento some
-function setKnown(on) {
-  try { if (on) localStorage.setItem(KNOWN, identity?.fp || ""); } catch (err) {}
-  const card = $("pairCard");
-  if (card) card.hidden = on;
-}
-
-function drawQr(canvas, text) {
-  const qr = qrcode(0, "M");
-  qr.addData(text);
-  qr.make();
-  const n = qr.getModuleCount(), margin = 3, cell = Math.max(2, Math.floor(200 / (n + margin * 2)));
-  const size = cell * (n + margin * 2);
-  canvas.width = canvas.height = size;
-  const ctx = canvas.getContext("2d");
-  ctx.fillStyle = "#fff";
-  ctx.fillRect(0, 0, size, size);
-  ctx.fillStyle = "#000";
-  for (let r = 0; r < n; r++) for (let c = 0; c < n; c++) if (qr.isDark(r, c)) ctx.fillRect((c + margin) * cell, (r + margin) * cell, cell, cell);
-}
-
-function renderPairCard() {
-  if (!identity) return;
-  let known = "";
-  try { known = localStorage.getItem(KNOWN) || ""; } catch (err) {}
-  drawQr($("pairQr"), `YTPF1:${identity.code}`);
-  $("pairCode").textContent = identity.code.replace(/(.{4})(?=.)/g, "$1-");
-  $("pairCard").hidden = known === identity.fp;
-}
-
-// Leitor do QR de conexão do PC (o Chrome do Android lê QR sozinho: BarcodeDetector)
-let scanStream = null;
-let scanOn = false;
-
-function stopScan() {
-  scanOn = false;
-  scanStream?.getTracks().forEach((t) => t.stop());
-  scanStream = null;
-  if ($("scanSheet").open) $("scanSheet").close();
-}
-
-async function scanPcQr() {
-  if (!("BarcodeDetector" in window)) { toast("Este navegador não lê QR code"); return; }
-  const detector = new BarcodeDetector({ formats: ["qr_code"] });
-  $("scanMsg").textContent = "Abrindo a câmera…";
-  $("scanSheet").showModal();
-  if (!await openCamera(0)) {
-    stopScan();
-    toast("Sem acesso à câmera");
-    return;
-  }
-  $("scanMsg").textContent = "Aponte para o QR de conexão no PC";
-  scanOn = true;
-  const video = $("scanVideo");
-  const tick = async () => {
-    if (!scanOn) return;
-    let text = "";
-    try { text = (await detector.detect(video)).map((c) => c.rawValue).find((t) => t.startsWith("YTPF2:")) || ""; } catch (err) {}
-    if (text) {
-      $("scanMsg").textContent = "Conectando…";
-      scanOn = false;
-      const ok = await connectByInvite(text);
-      if (ok) stopScan();
-      else { $("scanMsg").textContent = "Não conectou. No PC, gere outro QR e aponte de novo"; scanOn = true; setTimeout(tick, 1500); }
-      return;
-    }
-    setTimeout(tick, 200);
-  };
-  tick();
-}
-
-// Câmera do leitor: o "traseira" que o Chrome escolhe sozinho pode ser a ultra-wide, que não foca
-// de perto (Galaxy S23). Com a permissão dada, lista as traseiras, a principal primeiro (nos
-// Android, "camera2 0"), e fica com a primeira que tem foco automático; a escolhida fica guardada.
-// "Trocar câmera" passa para a próxima
-const CAM = "ytpf-remote-cam";
-let cams = [];
-let camIdx = 0;
-
-const camOrder = (d) => { const m = /camera2?\s*(\d+)/i.exec(d.label); return m ? Number(m[1]) : 50; };
-
-async function listCameras() {
-  const devs = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === "videoinput" && d.deviceId);
-  const back = devs.filter((d) => /back|rear|traseira|environment/i.test(d.label));
-  return (back.length ? back : devs).sort((a, b) => camOrder(a) - camOrder(b));
-}
-
-async function startStream(deviceId) {
-  const video = deviceId
-    ? { deviceId: { exact: deviceId }, width: { ideal: 1920 }, height: { ideal: 1080 } }
-    : { facingMode: "environment", width: { ideal: 1920 }, height: { ideal: 1080 } };
-  const stream = await navigator.mediaDevices.getUserMedia({ video });
-  const track = stream.getVideoTracks()[0];
-  const caps = track.getCapabilities?.() || {};
-  const focus = Array.isArray(caps.focusMode) && caps.focusMode.includes("continuous");
-  if (focus) await track.applyConstraints({ advanced: [{ focusMode: "continuous" }] }).catch(() => {});
-  return { stream, focus };
-}
-
-function useStream(stream) {
-  scanStream?.getTracks().forEach((t) => t.stop());
-  scanStream = stream;
-  const video = $("scanVideo");
-  video.srcObject = stream;
-  video.play().catch(() => {});
-}
-
-async function openCamera(step) {
-  try {
-    if (!cams.length) {
-      // Primeiro uma câmera qualquer: sem permissão, a lista vem sem os nomes
-      const first = await startStream("");
-      cams = await listCameras();
-      let saved = "";
-      try { saved = localStorage.getItem(CAM) || ""; } catch (err) {}
-      const savedIdx = cams.findIndex((d) => d.deviceId === saved);
-      if (savedIdx >= 0 || cams.length < 2) {
-        camIdx = Math.max(0, savedIdx);
-        if (!cams.length) { useStream(first.stream); return true; }
-        first.stream.getTracks().forEach((t) => t.stop());
-        useStream((await startStream(cams[camIdx].deviceId)).stream);
-      } else {
-        first.stream.getTracks().forEach((t) => t.stop());
-        // A primeira traseira com foco automático (na ordem: a principal antes)
-        let pick = null;
-        for (let i = 0; i < cams.length && !pick; i++) {
-          const s = await startStream(cams[i].deviceId).catch(() => null);
-          if (s?.focus) { pick = s; camIdx = i; }
-          else s?.stream.getTracks().forEach((t) => t.stop());
-        }
-        if (!pick) { camIdx = 0; pick = await startStream(cams[0].deviceId); }
-        useStream(pick.stream);
-      }
-    } else {
-      camIdx = (camIdx + step + cams.length) % cams.length;
-      useStream((await startStream(cams[camIdx].deviceId)).stream);
-    }
-    try { if (cams[camIdx]) localStorage.setItem(CAM, cams[camIdx].deviceId); } catch (err) {}
-    $("btnScanSwitch").hidden = cams.length < 2;
-    return true;
-  } catch (err) {
-    return false;
-  }
-}
-
-async function unpackInvite(text) {
-  const bytes = b64.dec(text.slice("YTPF2:".length));
-  return JSON.parse(new TextDecoder().decode(await pipe(bytes, new DecompressionStream("deflate-raw"))));
-}
-
-async function connectByInvite(text) {
-  if (!identity || spareBusy) return false;
-  let inv;
-  try { inv = await unpackInvite(text); } catch (err) { return false; }
-  if (!inv || typeof inv.u !== "string" || typeof inv.p !== "string" || !/^[0-9A-F]{64}$/i.test(inv.f || "") || !Array.isArray(inv.c)) return false;
-  const t0 = performance.now();
-  spareBusy = true;
-  try {
-    abandonAttempt();
-    dropConnection();
-    clearTimeout(retryTimer);
-    setConn("wait", "Conectando pelo QR…");
-    // A oferta do PC, remontada: o SDP de uma oferta deste mesmo Chrome com o usuário, a senha e a
-    // impressão digital do PC, mais os endereços dele
-    const tmp = new RTCPeerConnection();
-    tmp.createDataChannel("ytpf");
-    const base = (await tmp.createOffer()).sdp;
-    tmp.close();
-    const fpPc = inv.f.toUpperCase().match(/../g).join(":");
-    const lines = base.split("\r\n").filter((l) => l && !l.startsWith("a=candidate:"))
-      .map((l) => (l.startsWith("a=ice-ufrag:") ? `a=ice-ufrag:${inv.u}`
-        : l.startsWith("a=ice-pwd:") ? `a=ice-pwd:${inv.p}`
-        : l.startsWith("a=fingerprint:") ? `a=fingerprint:sha-256 ${fpPc}` : l));
-    const offer = [...lines, ...inv.c.filter((c) => typeof c === "string").slice(0, 20).map((c) => `a=${c}`)].join("\r\n") + "\r\n";
-    const peer = new RTCPeerConnection({ iceServers: [], certificates: [identity.cert] });
-    const chanP = new Promise((resolve) => { peer.ondatachannel = (e) => resolve(e.channel); });
-    await peer.setRemoteDescription({ type: "offer", sdp: offer });
-    const ans = await peer.createAnswer();
-    const munged = ans.sdp.split("\r\n").map((l) => (l.startsWith("a=ice-ufrag:") ? `a=ice-ufrag:${inv.pu}`
-      : l.startsWith("a=ice-pwd:") ? `a=ice-pwd:${inv.pp}` : l)).join("\r\n");
-    await peer.setLocalDescription({ type: "answer", sdp: munged });
-    const chan = await Promise.race([chanP, new Promise((r) => setTimeout(() => r(null), 5000))]);
-    const open = chan && await new Promise((resolve) => {
-      if (chan.readyState === "open") return resolve(true);
-      chan.addEventListener("open", () => resolve(true), { once: true });
-      setTimeout(() => resolve(false), 3000);
-    });
-    if (!open) {
-      const why = await iceSummary(peer);
-      try { peer.close(); } catch (err) {}
-      diag(`O QR não conectou (ICE: ${peer.iceConnectionState}; ${why})`, null);
-      setConn("off", "Não conectou pelo QR");
-      return false;
-    }
-    wireChannel(peer, chan, null);
-    diag(`Conectou pelo QR em ${Math.round(performance.now() - t0)} ms`, peer);
-    return true;
-  } catch (err) {
-    diag(`O QR não conectou: ${err?.message || err}`, null);
-    setConn("off", "Não conectou pelo QR");
-    return false;
-  } finally {
-    spareBusy = false;
-  }
 }
 
 // Canal com o PC (pelo ntfy ou pela vaga): a mesma ligação dos eventos
@@ -561,7 +291,6 @@ function wireChannel(peer, chan, onOpened) {
     setConn("on", "Conectado");
     setUpdated(false);
     send({ c: "hello", name: deviceName() });
-    if (identity) send({ c: "identity", fp: identity.fp });
     showTab(tab, true);
     onOpened?.();
   };
@@ -600,9 +329,15 @@ async function onSpare(m) {
   spare = s;
   await peer.setRemoteDescription({ type: "offer", sdp: m.sdp });
   await peer.setLocalDescription(await peer.createAnswer());
+  await iceDone(peer);
   if (spare !== s) return;
-  const bare = peer.localDescription.sdp.split("\r\n").filter((l) => !l.startsWith("a=candidate:") && !l.startsWith("a=end-of-candidates")).join("\r\n");
-  send({ c: "spareAnswer", id: s.id, sdp: bare });
+  // Os endereços deste celular vão junto: ao destravar, o celular manda um "toque" pelo carteiro e o
+  // PC chama por eles. Quem manda o primeiro pacote precisa ser o PC, senão o firewall do Windows
+  // (rede Pública) descarta a chegada do celular
+  const lines = peer.localDescription.sdp.split("\r\n");
+  const cands = lines.filter((l) => l.startsWith("a=candidate:")).map((l) => l.slice(2));
+  const bare = lines.filter((l) => !l.startsWith("a=candidate:") && !l.startsWith("a=end-of-candidates")).join("\r\n");
+  send({ c: "spareAnswer", id: s.id, sdp: bare, cands });
 }
 
 async function useSpare() {
@@ -611,12 +346,15 @@ async function useSpare() {
   if (!s || spareBusy) return false;
   spareBusy = true;
   const t0 = performance.now();
-  // Na rede local a vaga conecta em milissegundos: sem resposta em 2 s, ela não vale mais (a aba do
-  // PC foi recarregada, por exemplo)
+  // Com o toque, a vaga conecta em menos de 1 s: sem resposta em 5 s, ela não vale mais (a aba do PC
+  // foi recarregada, por exemplo)
   const away = awayMs ? ` depois de ${fmtAway(awayMs)} escondida` : "";
   try {
     for (const c of s.cands) await s.pc.addIceCandidate({ candidate: c, sdpMid: "0", sdpMLineIndex: 0 }).catch(() => {});
-    const chan = await Promise.race([s.chan, new Promise((r) => setTimeout(() => r(null), 2000))]);
+    // O toque: o PC chama de volta por esta vaga (o carteiro leva só o id dela, criptografado)
+    if (!mqtt?.ready && relayFresh() === false) listenRelay();
+    publish(ctx, { type: "knock", id: s.id }).catch(() => {});
+    const chan = await Promise.race([s.chan, new Promise((r) => setTimeout(() => r(null), 5000))]);
     const open = chan && await new Promise((resolve) => {
       if (chan.readyState === "open") return resolve(true);
       chan.addEventListener("open", () => resolve(true), { once: true });
@@ -636,24 +374,6 @@ async function useSpare() {
   }
 }
 
-// Resumo do ICE para o diagnóstico de falha: endereços do PC que o celular conseguiu usar e o
-// estado dos pares testados
-async function iceSummary(peer) {
-  try {
-    const st = await peer.getStats();
-    let remote = 0, mdns = 0, pairs = 0;
-    const states = {};
-    st.forEach((r) => {
-      if (r.type === "remote-candidate") { remote++; if (!r.address || /\.local$/i.test(r.address)) mdns++; }
-      if (r.type === "candidate-pair") { pairs++; states[r.state] = (states[r.state] || 0) + 1; }
-    });
-    const s = Object.entries(states).map(([k, v]) => `${v} ${k}`).join(", ");
-    return `endereços do PC: ${remote}${mdns ? ` (${mdns} sem resolver)` : ""}; pares: ${pairs}${s ? ` (${s})` : ""}`;
-  } catch (err) {
-    return "sem estatísticas";
-  }
-}
-
 const fmtAway = (ms) => ms < 60000 ? `${Math.round(ms / 1000)} s` : `${Math.round(ms / 60000)} min`;
 
 // Diagnóstico (fase de teste): como voltou e por qual caminho, os últimos eventos guardados
@@ -667,7 +387,8 @@ async function routeOf(peer) {
     st.forEach((r) => { if (r.type === "candidate-pair" && (r.id === pairId || (!pairId && r.nominated && r.state === "succeeded"))) pair = r; });
     if (!pair) return "";
     const l = st.get(pair.localCandidateId), rm = st.get(pair.remoteCandidateId);
-    const local = (c) => c && (c.candidateType === "host" || (c.candidateType === "prflx" && /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|fe80|fd|fc)/i.test(c.address || "")));
+    // Na vaga não há STUN: "prflx" é o endereço aprendido na própria rede local
+    const local = (c) => c && (c.candidateType === "host" || c.candidateType === "prflx");
     const how = local(l) && local(rm) ? "direto na rede local" : "pelo roteador";
     return `${how} (${l?.candidateType || "?"} → ${rm?.candidateType || "?"})`;
   } catch (err) {
@@ -698,23 +419,10 @@ function renderDiag() {
   box.hidden = !diagLog.length;
 }
 
-// "Conectar pelo ntfy.sh": desligado, o celular só conecta pela vaga de reconexão e pelo QR do PC,
-// sem nenhum serviço de fora
-const NTFY_OPT = "ytpf-remote-ntfy";
-function ntfyOn() {
-  try { return localStorage.getItem(NTFY_OPT) !== "off"; } catch (err) { return true; }
-}
-
 async function connect() {
   if (attempt && Date.now() - attemptAt < 20000) return;
   if (dc?.readyState === "open") return;
-  if (!ntfyOn()) {
-    es?.close();
-    es = null;
-    setConn("off", identity ? "Sem conexão: leia o QR do PC" : "Sem conexão");
-    return;
-  }
-  if (Date.now() < quotaUntil) { showQuota(); return; }
+  if (Date.now() < quotaUntil && !mqtt?.ready) { showQuota(); return; }
   abandonAttempt();
   const my = ++gen;
   const stale = () => my !== gen;
@@ -767,6 +475,16 @@ function scheduleRetry(soon) {
   if (document.hidden) return;
   if (!soon && fails >= 10) { setConn("off", "PC não encontrado. Toque aqui para procurar"); return; }
   retryTimer = setTimeout(connect, soon ? 300 : RETRY_S[Math.min(fails, RETRY_S.length) - 1] * 1000 || 2000);
+}
+
+// Lê até quando vai o limite do ntfy (sem parar: o MQTT pode estar entregando)
+async function readQuota() {
+  if (Date.now() < quotaUntil) return;
+  quotaUntil = Date.now() + 30 * 60000;
+  try {
+    const reset = ((await (await fetch(`${RELAY}/v1/account`)).json())?.stats?.reset_at || 0) * 1000;
+    if (reset > Date.now()) quotaUntil = reset;
+  } catch (err) {}
 }
 
 async function onQuota() {
@@ -854,8 +572,6 @@ function onMessage(m) {
     renderChapters(m.videoId === st.videoId ? m.items || [] : []);
   } else if (m.t === "captions") {
     renderCaptions(m.items || [], m.cur || "");
-  } else if (m.t === "known") {
-    setKnown(true);
   } else if (m.t === "spare") {
     onSpare(m).catch((err) => diag(`Vaga não preparada: ${err?.message || err}`));
   } else if (m.t === "toast") {
@@ -1687,30 +1403,9 @@ async function main() {
   renderDiag();
   markRate(true);
   requestAnimationFrame(frame);
-  try { identity = await loadIdentity(); } catch (err) {}
-  renderPairCard();
-  $("btnScanPc").addEventListener("click", scanPcQr);
-  $("btnScanClose").addEventListener("click", stopScan);
-  $("btnScanSwitch").addEventListener("click", async () => {
-    $("scanMsg").textContent = "Trocando de câmera…";
-    await openCamera(1);
-    $("scanMsg").textContent = "Aponte para o QR de conexão no PC";
-  });
-  $("scanSheet").addEventListener("close", stopScan);
-  $("btnPairHide").addEventListener("click", () => { $("pairCard").hidden = true; });
-  // Mostrar o QR de pareamento a qualquer hora (pelo botão sem conexão, ou tocando na versão)
-  const showPair = () => { renderPairCard(); $("pairCard").hidden = false; window.scrollTo({ top: 0, behavior: "smooth" }); };
-  $("btnShowPair").addEventListener("click", showPair);
-  $("btnPairForget").addEventListener("click", forgetPairing);
-  $("ntfyToggle").checked = ntfyOn();
-  $("ntfyToggle").addEventListener("change", (e) => {
-    try { localStorage.setItem(NTFY_OPT, e.target.checked ? "on" : "off"); } catch (err) {}
-    toast(e.target.checked ? "Conecta sozinho pelo ntfy quando não houver vaga" : "Só pela vaga e pelo QR, sem serviço de fora");
-    if (e.target.checked && dc?.readyState !== "open") { fails = 0; connect(); }
-  });
-  $("pcVer").addEventListener("click", () => { if ($("pairCard").hidden) showPair(); else $("pairCard").hidden = true; });
-  window.connectByInvite = connectByInvite; // testes
   ctx = await keys(secret);
+  mqtt = new Mqtt(`ytpf/${ctx.topic}`, onEnvelope);
+  mqtt.start();
   connect();
 }
 
