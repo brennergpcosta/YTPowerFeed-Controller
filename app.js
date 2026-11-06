@@ -65,15 +65,19 @@ async function publish(ctx, obj) {
   const data = await seal(ctx.key, obj);
   const id = Math.random().toString(36).slice(2, 10);
   const n = Math.ceil(data.length / CHUNK);
+  const sent = { ntfy: false, mqtt: false }; // por onde saiu (para o diagnóstico)
   for (let p = 0; p < n; p++) {
     const body = JSON.stringify({ f: me, i: id, p, n, d: data.slice(p * CHUNK, (p + 1) * CHUNK) });
     // Pelo MQTT público e pelo ntfy ao mesmo tempo: vale o que chegar primeiro
     const viaMqtt = !!mqtt?.publish(body);
     if (Date.now() < quotaUntil) {
       if (!viaMqtt) throw Object.assign(new Error("limite do ntfy"), { quota: true });
+      sent.mqtt = true;
       continue;
     }
     const r = await fetch(`${RELAY}/${ctx.topic}?cache=no`, { method: "POST", body }).catch(() => null);
+    sent.mqtt = sent.mqtt || viaMqtt;
+    sent.ntfy = sent.ntfy || !!r?.ok;
     // O ntfy.sh grátis aceita 250 mensagens por dia por endereço de internet (o PC e o celular no
     // mesmo Wi-Fi contam juntos); passou disso, responde 429 até o dia virar
     if (r?.status === 429) {
@@ -83,6 +87,7 @@ async function publish(ctx, obj) {
       throw new Error(`ntfy: ${r ? `HTTP ${r.status}` : "sem rede"}`);
     }
   }
+  return sent;
 }
 
 const parts = new Map();
@@ -346,22 +351,38 @@ async function useSpare() {
   if (!s || spareBusy) return false;
   spareBusy = true;
   const t0 = performance.now();
-  // Com o toque, a vaga conecta em menos de 1 s: sem resposta em 5 s, ela não vale mais (a aba do PC
+  // Com o toque, a vaga conecta em menos de 1 s: sem resposta em 7 s, ela não vale mais (a aba do PC
   // foi recarregada, por exemplo)
   const away = awayMs ? ` depois de ${fmtAway(awayMs)} escondida` : "";
   try {
     for (const c of s.cands) await s.pc.addIceCandidate({ candidate: c, sdpMid: "0", sdpMLineIndex: 0 }).catch(() => {});
-    // O toque: o PC chama de volta por esta vaga (o carteiro leva só o id dela, criptografado)
-    if (!mqtt?.ready && relayFresh() === false) listenRelay();
-    publish(ctx, { type: "knock", id: s.id }).catch(() => {});
-    const chan = await Promise.race([s.chan, new Promise((r) => setTimeout(() => r(null), 5000))]);
+    // O toque: o PC chama de volta por esta vaga (o carteiro leva só o id dela, criptografado). Logo
+    // depois de destravar, a internet do celular pode ainda não ter voltado e o MQTT ainda está
+    // reconectando: o toque se repete a cada 1,5 s (até 4 vezes) enquanto a vaga não abre
+    const knock = { sent: 0, ntfy: 0, mqtt: 0, tries: 0 };
+    let opened = false;
+    const sendKnock = async () => {
+      if (opened || knock.tries >= 4) return;
+      knock.tries++;
+      const r = await publish(ctx, { type: "knock", id: s.id }).catch(() => null);
+      if (r) { knock.sent++; knock.ntfy += r.ntfy ? 1 : 0; knock.mqtt += r.mqtt ? 1 : 0; }
+    };
+    // Ao destravar, o Android às vezes volta pelo 4G antes do Wi-Fi: o toque chegaria, mas o PC
+    // chamaria o endereço do Wi-Fi ainda fora do ar e a vaga morreria. Espera o Wi-Fi (até 3 s)
+    await waitWifi(3000);
+    sendKnock();
+    const knockTimer = setInterval(sendKnock, 1500);
+    const chan = await Promise.race([s.chan, new Promise((r) => setTimeout(() => r(null), 7000))]);
     const open = chan && await new Promise((resolve) => {
       if (chan.readyState === "open") return resolve(true);
       chan.addEventListener("open", () => resolve(true), { once: true });
       setTimeout(() => resolve(false), 1500);
     });
+    opened = true;
+    clearInterval(knockTimer);
     if (!open) {
-      diag(`A vaga falhou${away} (ICE: ${s.pc.iceConnectionState}); procurando pelo ntfy`, null);
+      const how = `toques: ${knock.sent} de ${knock.tries} saíram (ntfy ${knock.ntfy}, MQTT ${knock.mqtt}); MQTT ${mqtt?.ready ? "no ar" : "fora"}`;
+      diag(`A vaga falhou${away} (ICE: ${s.pc.iceConnectionState}; ${how}); procurando pelo ntfy`, null);
       try { s.pc.close(); } catch (err) {}
       return false;
     }
@@ -372,6 +393,18 @@ async function useSpare() {
     spareBusy = false;
     awayMs = 0;
   }
+}
+
+function waitWifi(max) {
+  const net = navigator.connection;
+  const onWifi = () => !net || !net.type || ["wifi", "ethernet", "unknown", "other"].includes(net.type);
+  if (onWifi()) return Promise.resolve();
+  return new Promise((resolve) => {
+    const done = () => { net.removeEventListener("change", check); clearTimeout(t); resolve(); };
+    const check = () => { if (onWifi()) done(); };
+    const t = setTimeout(done, max);
+    net.addEventListener("change", check);
+  });
 }
 
 const fmtAway = (ms) => ms < 60000 ? `${Math.round(ms / 1000)} s` : `${Math.round(ms / 60000)} min`;
