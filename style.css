@@ -380,6 +380,10 @@ input[type="range"]::-moz-range-thumb { width: 16px; height: 16px; border: 0; bo
 .scan-actions { display: flex; justify-content: center; gap: 10px; margin-top: 12px; }
 .scan-actions .qr-btn { margin: 0; }
 
+/* Opção do ntfy (fase de teste) */
+.ntfy-opt { display: flex; gap: 8px; align-items: flex-start; margin: -4px 0 14px; padding: 0 4px; font-size: 12.5px; color: var(--text-2); }
+.ntfy-opt input { accent-color: var(--signal); margin: 1px 0 0; flex: none; }
+
 /* Diagnóstico da reconexão (fase de teste) */
 .diag {
   list-style: none;

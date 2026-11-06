@@ -254,7 +254,7 @@ function wake(e) {
   if (away > 2000) awayMs = away;
   if (slept && ctx) {
     abandonAttempt();
-    if (!relayFresh() || esAlive) listenRelay();
+    if (ntfyOn() && (!relayFresh() || esAlive)) listenRelay();
   }
   // Mais de 25 s trancado: o PC já desistiu da conexão (30 s sem resposta); sem esperar o ping
   if (spare && !spareBusy && (away > 25000 || e?.type === "frozen-gap")) { reconnectNow(); return; }
@@ -698,9 +698,22 @@ function renderDiag() {
   box.hidden = !diagLog.length;
 }
 
+// "Conectar pelo ntfy.sh": desligado, o celular só conecta pela vaga de reconexão e pelo QR do PC,
+// sem nenhum serviço de fora
+const NTFY_OPT = "ytpf-remote-ntfy";
+function ntfyOn() {
+  try { return localStorage.getItem(NTFY_OPT) !== "off"; } catch (err) { return true; }
+}
+
 async function connect() {
   if (attempt && Date.now() - attemptAt < 20000) return;
   if (dc?.readyState === "open") return;
+  if (!ntfyOn()) {
+    es?.close();
+    es = null;
+    setConn("off", identity ? "Sem conexão: leia o QR do PC" : "Sem conexão");
+    return;
+  }
   if (Date.now() < quotaUntil) { showQuota(); return; }
   abandonAttempt();
   const my = ++gen;
@@ -1689,6 +1702,12 @@ async function main() {
   const showPair = () => { renderPairCard(); $("pairCard").hidden = false; window.scrollTo({ top: 0, behavior: "smooth" }); };
   $("btnShowPair").addEventListener("click", showPair);
   $("btnPairForget").addEventListener("click", forgetPairing);
+  $("ntfyToggle").checked = ntfyOn();
+  $("ntfyToggle").addEventListener("change", (e) => {
+    try { localStorage.setItem(NTFY_OPT, e.target.checked ? "on" : "off"); } catch (err) {}
+    toast(e.target.checked ? "Conecta sozinho pelo ntfy quando não houver vaga" : "Só pela vaga e pelo QR, sem serviço de fora");
+    if (e.target.checked && dc?.readyState !== "open") { fails = 0; connect(); }
+  });
   $("pcVer").addEventListener("click", () => { if ($("pairCard").hidden) showPair(); else $("pairCard").hidden = true; });
   window.connectByInvite = connectByInvite; // testes
   ctx = await keys(secret);
