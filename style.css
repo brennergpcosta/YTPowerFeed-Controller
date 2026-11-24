@@ -106,7 +106,7 @@ button { font: inherit; color: inherit; }
 .mirror.on { opacity: 1; visibility: visible; transform: none; transition: opacity 0.35s ease, transform 0.35s var(--ease); }
 .mirror-stage { position: absolute; inset: 0; opacity: 0; transition: opacity 0.5s ease; }
 .mirror.live .mirror-stage { opacity: 1; }
-.mirror-stage iframe { width: 100%; height: 100%; border: 0; display: block; pointer-events: none; }
+.mirror-stage { width: 100%; height: 100%; object-fit: contain; display: block; pointer-events: none; }
 .mirror-spin {
   position: absolute; left: 50%; top: 50%; width: 30px; height: 30px; margin: -15px 0 0 -15px;
   border-radius: 50%; border: 3px solid rgba(255, 255, 255, 0.2); border-top-color: var(--signal);

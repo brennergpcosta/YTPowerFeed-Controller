@@ -1,30 +1,16 @@
 /**
- * Espelho: tocar na capa do "Tocando agora" passa o mesmo vídeo aqui no celular, acompanhando o PC.
- * É o player do YouTube embutido (IFrame API), mudo por padrão: o vídeo vem direto do YouTube (gasta
- * dados do celular), não é a tela do PC. A posição segue o tempo que o PC manda; diferença acima de
- * ~1 s (tocando) faz pular para o ponto do PC. Tocar de novo na capa fecha.
+ * Espelho: tocar na capa do "Tocando agora" passa aqui o vídeo que toca no PC. O vídeo vem do
+ * próprio PC, pela conexão direta com ele na rede de casa (WebRTC, sem servidor e sem internet),
+ * em qualidade baixa (até 480p). Mudo por padrão, com botão de som. Tocar de novo na capa fecha.
+ * Protocolo: o celular pede { c: "mirror", on }; na primeira vez em cada conexão o PC manda uma
+ * oferta { t: "rtc", sdp } com as trilhas e o celular responde { c: "rtcAnswer", sdp }.
  */
 
 const $ = (id) => document.getElementById(id);
-let apiWait = null;
-let on = false, player = null, ready = false, vid = "", muted = true;
-let holdUntil = 0, timer = 0, killTimer = 0, msgTimer = 0;
-let get = () => ({ st: {}, t: 0 });
+let on = false, muted = true, msgTimer = 0, killTimer = 0;
+let ctx = { send: () => {}, pc: () => null, has: () => false };
 
-function loadApi() {
-  if (window.YT?.Player) return Promise.resolve(window.YT);
-  if (apiWait) return apiWait;
-  apiWait = new Promise((ok, fail) => {
-    const prev = window.onYouTubeIframeAPIReady;
-    window.onYouTubeIframeAPIReady = () => { if (typeof prev === "function") prev(); ok(window.YT); };
-    const s = document.createElement("script");
-    s.src = "https://www.youtube.com/iframe_api";
-    s.onerror = () => { apiWait = null; s.remove(); fail(new Error("sem rede")); };
-    document.head.appendChild(s);
-  });
-  return apiWait;
-}
-
+const video = () => $("mirrorVideo");
 function setLive(v) { $("mirror").classList.toggle("live", v); }
 
 function showMsg(text) {
@@ -38,111 +24,89 @@ function showMsg(text) {
 function renderSnd() {
   $("mirrorSnd").classList.toggle("muted", muted);
   $("mirrorSnd").setAttribute("aria-label", muted ? "Ligar o som no celular" : "Tirar o som do celular");
+  video().muted = muted;
 }
 
-async function open() {
-  const { st, t } = get();
-  if (!st.videoId) return;
+// No 4G/5G a conexão pode não ser direta pela rede de casa: o espelho fica só no Wi-Fi
+const onCellular = () => navigator.connection?.type === "cellular";
+
+function open() {
+  openBox();
+  if (onCellular()) { showMsg("O vídeo no celular só funciona no Wi-Fi de casa"); return; }
+  ctx.send({ c: "mirror", on: true });
+}
+function openBox() {
   on = true;
   clearTimeout(killTimer);
   $("thumbWrap").classList.add("mirroring");
   $("mirror").classList.add("on");
-  timer = timer || setInterval(sync, 1000);
-  if (player) { sync(); return; } // reaberto no meio da saída: o player ainda está lá
-  let YT;
-  try { YT = await loadApi(); } catch (err) { showMsg("Sem conexão com o YouTube"); return; }
-  if (!on || player) return;
-  const stage = document.createElement("div");
-  $("mirrorStage").replaceChildren(stage);
-  vid = st.videoId;
-  ready = false;
-  setLive(false);
-  player = new YT.Player(stage, {
-    videoId: vid,
-    width: "100%",
-    height: "100%",
-    playerVars: {
-      autoplay: 1, mute: 1, controls: 0, playsinline: 1, rel: 0, fs: 0, disablekb: 1,
-      iv_load_policy: 3, cc_load_policy: 0, start: Math.floor(t), origin: location.origin
-    },
-    events: {
-      onReady: () => {
-        ready = true;
-        if (muted) player.mute(); else { player.unMute(); player.setVolume(100); }
-        holdUntil = 0;
-        sync();
-      },
-      onStateChange: (e) => { if (e.data === 1) setLive(true); },
-      onError: (e) => showMsg(e.data === 101 || e.data === 150
-        ? "O dono deste vídeo não deixa ele tocar fora do YouTube"
-        : "Não deu para tocar este vídeo aqui")
-    }
-  });
+  const v = video();
+  if (v.srcObject && v.paused) v.play().catch(() => {});
 }
 
 function close() {
+  if (!on) return;
   on = false;
-  clearInterval(timer);
-  timer = 0;
+  ctx.send({ c: "mirror", on: false });
   $("thumbWrap").classList.remove("mirroring");
   $("mirror").classList.remove("on");
-  try { player?.pauseVideo(); } catch (err) {}
-  // Some com a transição e só então desmonta (reabrir antes disso aproveita o mesmo player)
+  // Some com a transição e só então para (reabrir antes disso continua de onde está)
   clearTimeout(killTimer);
-  killTimer = setTimeout(() => {
-    if (on) return;
-    try { player?.destroy(); } catch (err) {}
-    player = null;
-    ready = false;
-    vid = "";
-    setLive(false);
-    $("mirrorStage").replaceChildren();
-  }, 450);
+  killTimer = setTimeout(() => { if (!on) { video().pause(); setLive(false); } }, 450);
 }
 
-// Acompanha o PC: vídeo, tocar/pausar, velocidade e posição
-export function mirrorSync() { if (on) sync(); }
-function sync() {
-  const { st, t } = get();
-  if (!st.videoId) { close(); return; }
-  if (!player || !ready) return;
-  const now = performance.now();
-  if (st.videoId !== vid) {
-    vid = st.videoId;
-    setLive(false);
-    player.loadVideoById({ videoId: vid, startSeconds: t });
-    holdUntil = now + 3000;
-    return;
+// Trilhas do PC (pc.ontrack): um stream só, com vídeo e som
+export function mirrorTrack(e) {
+  const v = video();
+  let stream = e.streams[0];
+  if (!stream) {
+    stream = v.srcObject instanceof MediaStream ? v.srcObject : new MediaStream();
+    stream.addTrack(e.track);
   }
-  const ls = player.getPlayerState();
-  if (document.hidden) { if (ls === 1 || ls === 3) player.pauseVideo(); return; } // tela apagada: não gasta dados
-  if (st.state === 3) return; // PC carregando: espera ele decidir
-  const playing = st.state === 1 && !st.ad;
-  if (playing) { if (ls !== 1 && ls !== 3) player.playVideo(); }
-  else if (ls === 1 || ls === 3) player.pauseVideo();
-  const rate = st.rate || 1;
-  if (player.getPlaybackRate() !== rate) player.setPlaybackRate(rate);
-  if (now < holdUntil || ls === 3 || st.ad) return;
-  const drift = player.getCurrentTime() - t;
-  if (Math.abs(drift) > (playing ? 1 : 0.4)) {
-    player.seekTo(t + (playing ? 0.4 * rate : 0), true); // um pouco à frente: o tempo de carregar
-    holdUntil = now + 2500;
-  }
+  if (v.srcObject !== stream) v.srcObject = stream;
+  if (on) v.play().catch(() => {});
 }
 
-export function initMirror(getState) {
-  get = getState;
+// Oferta do PC (primeira vez em cada conexão)
+export async function mirrorOffer(sdp) {
+  const pc = ctx.pc();
+  if (!pc || typeof sdp !== "string") return;
+  await pc.setRemoteDescription({ type: "offer", sdp });
+  await pc.setLocalDescription(await pc.createAnswer());
+  ctx.send({ c: "rtcAnswer", sdp: pc.localDescription.sdp });
+}
+
+// Conexão nova (caiu e voltou): pede o vídeo de novo
+export function mirrorReconnected() {
+  setLive(false);
+  if (on && !document.hidden) ctx.send({ c: "mirror", on: true });
+}
+
+// Sem vídeo no PC: fecha
+export function mirrorSync(st) { if (on && !st.videoId) close(); }
+
+export function initMirror(opts) {
+  ctx = opts;
+  const v = video();
+  // Só aparece com imagem (antes disso fica a capa com o círculo de carregando)
+  const shown = () => { if (on && v.videoWidth) setLive(true); };
+  v.addEventListener("playing", shown);
+  v.addEventListener("resize", shown);
   $("thumbWrap").addEventListener("click", () => {
     if (navigator.vibrate) navigator.vibrate(10);
-    if (on) close(); else open();
+    if (on) close(); else if (ctx.has()) open();
   });
   $("mirrorSnd").addEventListener("click", (e) => {
     e.stopPropagation();
     muted = !muted;
     renderSnd();
-    if (!ready) return;
-    if (muted) player.mute(); else { player.unMute(); player.setVolume(100); }
+    if (on && v.paused) v.play().catch(() => {});
   });
-  document.addEventListener("visibilitychange", () => { if (on) { holdUntil = 0; sync(); } });
+  // Tela apagada: o PC para de mandar o vídeo; ao voltar, manda de novo
+  document.addEventListener("visibilitychange", () => {
+    if (!on) return;
+    ctx.send({ c: "mirror", on: !document.hidden });
+    if (!document.hidden) v.play().catch(() => {});
+  });
   renderSnd();
 }

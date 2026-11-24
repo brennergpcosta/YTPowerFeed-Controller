@@ -47,9 +47,9 @@
     <section class="now" id="now">
       <div class="thumb-wrap" id="thumbWrap">
         <img class="thumb" id="nowThumb" alt="">
-        <!-- Espelho: o vídeo do PC passando aqui (mirror.js) -->
+        <!-- Espelho: o vídeo do PC passando aqui, direto do PC pela rede de casa (mirror.js) -->
         <div class="mirror" id="mirror">
-          <div class="mirror-stage" id="mirrorStage"></div>
+          <video class="mirror-stage" id="mirrorVideo" playsinline muted autoplay></video>
           <span class="mirror-spin" aria-hidden="true"></span>
           <button class="mirror-snd" id="mirrorSnd" aria-label="Ligar o som no celular">
             <svg viewBox="0 0 24 24" class="i-vol"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0 0 14 8v8a4.5 4.5 0 0 0 2.5-4z"/></svg>

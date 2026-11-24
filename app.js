@@ -6,7 +6,7 @@
  */
 
 import { Mqtt } from "./mqtt.js";
-import { initMirror, mirrorSync } from "./mirror.js";
+import { initMirror, mirrorSync, mirrorTrack, mirrorOffer, mirrorReconnected } from "./mirror.js";
 
 const RELAY = "https://ntfy.sh";
 const ICE = [{ urls: "stun:stun.l.google.com:19302" }, { urls: "stun:stun1.l.google.com:19302" }];
@@ -298,11 +298,13 @@ function wireChannel(peer, chan, onOpened) {
     setUpdated(false);
     send({ c: "hello", name: deviceName() });
     showTab(tab, true);
+    mirrorReconnected();
     onOpened?.();
   };
   chan.onopen = opened;
   chan.onclose = () => { if (dc !== chan) return; dc = null; setConn("off", "Desconectado"); scheduleRetry(true); };
   chan.onmessage = (e) => { lastMsgAt = Date.now(); try { onMessage(JSON.parse(e.data)); } catch (err) {} };
+  peer.ontrack = (e) => { if (pc === peer) mirrorTrack(e); }; // vídeo do PC na capa (mirror.js)
   peer.onconnectionstatechange = () => {
     if (pc !== peer) return;
     if (peer.connectionState === "failed") { dropConnection(); setConn("off", "A conexão caiu"); scheduleRetry(true); }
@@ -606,6 +608,8 @@ function onMessage(m) {
     renderChapters(m.videoId === st.videoId ? m.items || [] : []);
   } else if (m.t === "captions") {
     renderCaptions(m.items || [], m.cur || "");
+  } else if (m.t === "rtc") {
+    mirrorOffer(m.sdp).catch((err) => diag(`Vídeo na capa não negociado: ${err?.message || err}`));
   } else if (m.t === "spare") {
     onSpare(m).catch((err) => diag(`Vaga não preparada: ${err?.message || err}`));
   } else if (m.t === "toast") {
@@ -644,7 +648,7 @@ function renderNow() {
   $("tDur").textContent = fmt(st.duration);
   $("thumbWrap").classList.toggle("has", has);
   renderActs(has);
-  mirrorSync();
+  mirrorSync(st);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1435,7 +1439,7 @@ async function main() {
   for (const b of $("tabs").children) b.classList.toggle("on", b.dataset.tab === tab);
   buildRates();
   bindUi();
-  initMirror(() => ({ st, t: curTime() }));
+  initMirror({ send, pc: () => pc, has: () => !!st.videoId });
   renderNow();
   renderDiag();
   markRate(true);
