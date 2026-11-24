@@ -6,6 +6,7 @@
  */
 
 import { Mqtt } from "./mqtt.js";
+import { initMirror, mirrorSync } from "./mirror.js";
 
 const RELAY = "https://ntfy.sh";
 const ICE = [{ urls: "stun:stun.l.google.com:19302" }, { urls: "stun:stun1.l.google.com:19302" }];
@@ -641,7 +642,9 @@ function renderNow() {
   $("btnFs").classList.toggle("on", !!st.fs);
   for (const b of $("resSeg").children) b.classList.toggle("on", b.dataset.res === st.resMode);
   $("tDur").textContent = fmt(st.duration);
+  $("thumbWrap").classList.toggle("has", has);
   renderActs(has);
+  mirrorSync();
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1432,6 +1435,7 @@ async function main() {
   for (const b of $("tabs").children) b.classList.toggle("on", b.dataset.tab === tab);
   buildRates();
   bindUi();
+  initMirror(() => ({ st, t: curTime() }));
   renderNow();
   renderDiag();
   markRate(true);
