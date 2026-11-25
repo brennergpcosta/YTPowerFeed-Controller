@@ -1439,7 +1439,7 @@ async function main() {
   for (const b of $("tabs").children) b.classList.toggle("on", b.dataset.tab === tab);
   buildRates();
   bindUi();
-  initMirror({ send, pc: () => pc, has: () => !!st.videoId });
+  initMirror({ send, pc: () => pc, state: () => st, diag });
   renderNow();
   renderDiag();
   markRate(true);

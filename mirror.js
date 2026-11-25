@@ -7,8 +7,33 @@
  */
 
 const $ = (id) => document.getElementById(id);
-let on = false, muted = true, msgTimer = 0, killTimer = 0;
-let ctx = { send: () => {}, pc: () => null, has: () => false };
+let on = false, muted = true, msgTimer = 0, killTimer = 0, watchTimer = 0, logged = false;
+let ctx = { send: () => {}, pc: () => null, state: () => ({}), diag: () => {} };
+const wd = { frames: -1, since: 0, tries: 0 };
+
+// Vigia: imagem parada por 3 s com o PC tocando → anota no diagnóstico e pede ao PC para capturar
+// de novo (até 3 vezes seguidas)
+async function watch() {
+  const pc = ctx.pc();
+  if (!on || document.hidden || !pc) return;
+  let r = null;
+  try { (await pc.getStats()).forEach((x) => { if (x.type === "inbound-rtp" && x.kind === "video") r = x; }); } catch (err) { return; }
+  const f = r?.framesDecoded ?? 0, now = performance.now();
+  if (f !== wd.frames) {
+    if (f > wd.frames && wd.frames >= 0) wd.tries = 0;
+    wd.frames = f;
+    wd.since = now;
+    if (f > 0 && !logged) { logged = true; ctx.diag(`Vídeo na capa chegando (${r.frameHeight || "?"}p)`, pc); }
+    return;
+  }
+  const st = ctx.state();
+  if (!(st.state === 1 && !st.ad) || now - wd.since < 3000 || wd.tries >= 3) return;
+  wd.since = now;
+  wd.tries++;
+  const mx = st.mx || {};
+  ctx.diag(`Vídeo na capa parou (${wd.tries}ª): recebidos ${r?.framesReceived ?? 0}, pacotes ${r?.packetsReceived ?? 0}; PC ${mx.vis || "?"}, quadros lá ${mx.dec ?? "?"}, trilhas ${mx.tracks ?? "?"}, envio ${mx.snd || "?"}`, pc);
+  ctx.send({ c: "mirror", on: true, fresh: true });
+}
 
 const video = () => $("mirrorVideo");
 function setLive(v) { $("mirror").classList.toggle("live", v); }
@@ -40,6 +65,9 @@ function openBox() {
   clearTimeout(killTimer);
   $("thumbWrap").classList.add("mirroring");
   $("mirror").classList.add("on");
+  wd.frames = -1; wd.tries = 0; wd.since = performance.now(); logged = false;
+  clearInterval(watchTimer);
+  watchTimer = setInterval(watch, 1000);
   const v = video();
   if (v.srcObject && v.paused) v.play().catch(() => {});
 }
@@ -47,6 +75,7 @@ function openBox() {
 function close() {
   if (!on) return;
   on = false;
+  clearInterval(watchTimer);
   ctx.send({ c: "mirror", on: false });
   $("thumbWrap").classList.remove("mirroring");
   $("mirror").classList.remove("on");
@@ -94,7 +123,7 @@ export function initMirror(opts) {
   v.addEventListener("resize", shown);
   $("thumbWrap").addEventListener("click", () => {
     if (navigator.vibrate) navigator.vibrate(10);
-    if (on) close(); else if (ctx.has()) open();
+    if (on) close(); else if (ctx.state().videoId) open();
   });
   $("mirrorSnd").addEventListener("click", (e) => {
     e.stopPropagation();
